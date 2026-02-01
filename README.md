@@ -1,7 +1,7 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Version](https://img.shields.io/badge/version-1.1--optimized-green)
+![Version](https://img.shields.io/badge/version-2.0-green)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 
 ## 📌 简介
@@ -18,6 +18,8 @@
 
 - ✅ **无限次**自动触发 1080P 试用，**不限时长**
 - ✅ **彻底屏蔽**登录弹窗与自动暂停
+- ✅ **解锁全部评论**，突破未登录只能看3条的限制
+- ✅ **可选自动加载**所有评论（最多20页）
 - ✅ **可视化面板**，一键切换 1080P / 720P / 480P / 360P
 - ✅ **Edge / Chrome / Firefox** 全平台兼容
 - ✅ **零配置**，安装即用；已登录用户自动退出，零干扰
@@ -39,6 +41,8 @@
 
 - **首选画质**：1080p / 720p / 480p / 360p
 - **切换时暂停**：开 / 关（防止音画不同步）
+- **解锁全部评论**：开 / 关（突破未登录3条限制）
+- **自动加载所有评论**：开 / 关（可选加载最多20页）
 - **已登录自动退出**：零冲突、零性能损耗
 
 ## 📊 脚本信息
@@ -62,8 +66,17 @@
 2. 阻止登录提示弹窗的DOM元素加载
 3. 覆盖原生视频控制函数，防止自动暂停
 4. 自动触发高清画质试用，并移除时间限制
+5. 拦截评论API接口，移除登录限制标记
+6. 自动清理"登录后查看更多评论"的提示元素
 
 ## 🔄 更新日志
+
+### v2.0 (2026-02-01)
+- 🎉 **重磅更新**：新增评论解锁功能
+- 💬 **评论解锁**：未登录可查看全部评论，突破3条限制
+- 🔄 **自动加载**：可选自动加载所有评论（最多20页）
+- ⚡ **性能优化**：API拦截机制，零性能损耗
+- 🎨 **设置面板**：新增评论相关设置项
 
 ### v1.1-optimized (2026-01-27)
 - ⚡ **性能优化**：使用 MutationObserver 替代 setInterval，大幅降低 CPU 占用
