@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      1.1-optimized
-// @description  未登录自动无限试用最高画质 + 阻止登录弹窗/自动暂停（性能优化版）
+// @version      2.0
+// @description  未登录自动无限试用最高画质 + 阻止登录弹窗/自动暂停 + 解锁全部评论（v2.0）
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -27,13 +27,228 @@
     BUTTON_CLICK_DELAY: 800,
     TOAST_CHECK_INTERVAL: 100,
     CLICK_TIMEOUT: 500,
-    TRIAL_TIMEOUT: 3e8
+    TRIAL_TIMEOUT: 3e8,
+    // 评论配置
+    COMMENT_AUTO_LOAD: false,      // 默认关闭自动加载全部评论
+    COMMENT_MAX_PAGES: 20,         // 最多加载20页
+    COMMENT_PAGE_SIZE: 49,         // 每页49条（API最大值）
+    COMMENT_LOAD_DELAY: 800        // 加载延迟800ms
   };
 
   const options = {
     preferQuality: GM_getValue('preferQuality', '1080'),
-    isWaitUntilHighQualityLoaded: GM_getValue('isWaitUntilHighQualityLoaded', false)
+    isWaitUntilHighQualityLoaded: GM_getValue('isWaitUntilHighQualityLoaded', false),
+    enableCommentUnlock: GM_getValue('enableCommentUnlock', true),
+    autoLoadAllComments: GM_getValue('autoLoadAllComments', false)
   };
+
+  /* ========== 工具函数 ========== */
+  // 等待元素出现
+  function waitForElement(selector, timeout = 10000) {
+    return new Promise((resolve, reject) => {
+      const element = document.querySelector(selector);
+      if (element) return resolve(element);
+      
+      const observer = new MutationObserver((mutations, obs) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          obs.disconnect();
+          resolve(element);
+        }
+      });
+      
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true
+      });
+      
+      setTimeout(() => {
+        observer.disconnect();
+        reject(new Error(`等待元素超时: ${selector}`));
+      }, timeout);
+    });
+  }
+
+  // 延迟函数
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  // 获取视频AID
+  function getVideoOid() {
+    try {
+      const initialState = unsafeWindow.__INITIAL_STATE__;
+      if (initialState?.aid) return initialState.aid;
+      if (initialState?.videoData?.aid) return initialState.videoData.aid;
+    } catch (e) {}
+    
+    const aidElement = document.querySelector('[data-aid]');
+    if (aidElement) return aidElement.dataset.aid;
+    
+    return null;
+  }
+
+  /* ========== 评论解锁模块 ========== */
+  function initCommentUnlock() {
+    if (!options.enableCommentUnlock) return;
+    
+    console.log('[评论解锁] 初始化评论解锁模块');
+    
+    // API拦截 - Fetch
+    const originalFetch = unsafeWindow.fetch;
+    unsafeWindow.fetch = function(...args) {
+      const url = args[0];
+      
+      return originalFetch.apply(this, args).then(async response => {
+        if (typeof url === 'string' && url.includes('api.bilibili.com/x/v2/reply')) {
+          try {
+            const clonedResponse = response.clone();
+            const data = await clonedResponse.json();
+            
+            if (data.data) {
+              data.data.show_bvid = true;
+              data.data.need_login = false;
+              
+              if (data.data.upper && data.data.upper.top) {
+                data.data.upper.top.need_login = false;
+              }
+              
+              console.log('[评论解锁] Fetch请求已处理');
+            }
+            
+            return new Response(JSON.stringify(data), {
+              status: response.status,
+              statusText: response.statusText,
+              headers: response.headers
+            });
+          } catch (e) {
+            console.error('[评论解锁] Fetch处理失败:', e);
+            return response;
+          }
+        }
+        
+        return response;
+      });
+    };
+    
+    // API拦截 - XMLHttpRequest
+    const originalOpen = XMLHttpRequest.prototype.open;
+    const originalSend = XMLHttpRequest.prototype.send;
+    
+    XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+      this._url = url;
+      return originalOpen.call(this, method, url, ...rest);
+    };
+    
+    XMLHttpRequest.prototype.send = function(...args) {
+      if (this._url && this._url.includes('api.bilibili.com/x/v2/reply')) {
+        const originalOnLoad = this.onload;
+        this.addEventListener('load', function() {
+          try {
+            const data = JSON.parse(this.responseText);
+            if (data.data) {
+              data.data.need_login = false;
+              console.log('[评论解锁] XHR请求已处理');
+            }
+          } catch (e) {
+            console.error('[评论解锁] XHR处理失败:', e);
+          }
+        });
+      }
+      return originalSend.apply(this, args);
+    };
+    
+    // DOM清理 - 移除登录提示元素
+    function cleanupLoginPrompts() {
+      const selectors = [
+        '.login-tip',
+        '.reply-notice',
+        '.login-panel',
+        '.bili-comments-login-tip'
+      ];
+      
+      selectors.forEach(selector => {
+        document.querySelectorAll(selector).forEach(el => {
+          try {
+            el.remove();
+            console.log(`[评论解锁] 已移除登录提示: ${selector}`);
+          } catch (e) {}
+        });
+      });
+    }
+    
+    // 使用 MutationObserver 监听DOM变化
+    const commentObserver = new MutationObserver(() => {
+      cleanupLoginPrompts();
+    });
+    
+    // 等待页面加载完成后启动观察器
+    const startCommentObserver = () => {
+      if (document.body) {
+        commentObserver.observe(document.body, {
+          childList: true,
+          subtree: true
+        });
+        cleanupLoginPrompts(); // 立即清理一次
+      }
+    };
+    
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', startCommentObserver);
+    } else {
+      startCommentObserver();
+    }
+    
+    // 自动加载所有评论（可选）
+    if (options.autoLoadAllComments) {
+      console.log('[评论解锁] 启用自动加载所有评论');
+      
+      async function autoLoadComments() {
+        try {
+          await sleep(3000); // 等待页面加载
+          
+          const oid = getVideoOid();
+          if (!oid) {
+            console.warn('[评论解锁] 未找到视频AID，跳过自动加载');
+            return;
+          }
+          
+          console.log(`[评论解锁] 开始自动加载评论，视频AID: ${oid}`);
+          
+          for (let page = 1; page <= CONFIG.COMMENT_MAX_PAGES; page++) {
+            try {
+              const url = `https://api.bilibili.com/x/v2/reply?type=1&oid=${oid}&pn=${page}&ps=${CONFIG.COMMENT_PAGE_SIZE}`;
+              const response = await fetch(url);
+              const data = await response.json();
+              
+              if (data.code === 0 && data.data && data.data.replies && data.data.replies.length > 0) {
+                console.log(`[评论解锁] 已加载第 ${page} 页评论，共 ${data.data.replies.length} 条`);
+                await sleep(CONFIG.COMMENT_LOAD_DELAY);
+              } else {
+                console.log(`[评论解锁] 评论加载完成，共 ${page - 1} 页`);
+                break;
+              }
+            } catch (e) {
+              console.error(`[评论解锁] 加载第 ${page} 页失败:`, e);
+              break;
+            }
+          }
+        } catch (e) {
+          console.error('[评论解锁] 自动加载失败:', e);
+        }
+      }
+      
+      // 延迟启动自动加载
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', autoLoadComments);
+      } else {
+        autoLoadComments();
+      }
+    }
+  }
+
+  /* ========== 初始化评论解锁（无论是否登录都执行） ========== */
+  initCommentUnlock();
 
   /* ========== 1. 如果已登录直接退出 ========== */
   if (document.cookie.includes('DedeUserID')) return;
@@ -182,6 +397,7 @@ select:hover{border-color:#00aeec}
 .switch[data-status='on']:after{left:23px}
 .qp-close-btn{padding:10px;background:#00aeec;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px;font-weight:600;transition:background .2s}
 .qp-close-btn:hover{background:#0098d1}
+.qp-section-divider{height:1px;background:#e0e0e0;margin:8px 0}
 `);
 
   const panel = document.createElement('div');
@@ -201,6 +417,16 @@ select:hover{border-color:#00aeec}
       <div class="qp-row">
         <span class="qp-label">切换时暂停播放</span>
         <span class="switch" data-key="isWaitUntilHighQualityLoaded" data-status="${options.isWaitUntilHighQualityLoaded ? 'on' : 'off'}"></span>
+      </div>
+      <div class="qp-section-divider"></div>
+      <div class="qp-title">💬 评论设置</div>
+      <div class="qp-row">
+        <span class="qp-label">解锁全部评论</span>
+        <span class="switch" data-key="enableCommentUnlock" data-status="${options.enableCommentUnlock ? 'on' : 'off'}"></span>
+      </div>
+      <div class="qp-row">
+        <span class="qp-label">自动加载所有评论</span>
+        <span class="switch" data-key="autoLoadAllComments" data-status="${options.autoLoadAllComments ? 'on' : 'off'}"></span>
       </div>
       <button class="qp-close-btn" onclick="this.parentElement.parentElement.style.display='none'">✓ 保存并关闭</button>
     </div>`;
@@ -267,8 +493,18 @@ select:hover{border-color:#00aeec}
         const newStatus = el.dataset.status === 'on' ? 'off' : 'on';
         el.dataset.status = newStatus;
         const isOn = newStatus === 'on';
-        options.isWaitUntilHighQualityLoaded = isOn;
-        GM_setValue(el.dataset.key, isOn);
+        const key = el.dataset.key;
+        
+        // 更新对应的选项
+        if (key === 'isWaitUntilHighQualityLoaded') {
+          options.isWaitUntilHighQualityLoaded = isOn;
+        } else if (key === 'enableCommentUnlock') {
+          options.enableCommentUnlock = isOn;
+        } else if (key === 'autoLoadAllComments') {
+          options.autoLoadAllComments = isOn;
+        }
+        
+        GM_setValue(key, isOn);
       };
     }
   });
