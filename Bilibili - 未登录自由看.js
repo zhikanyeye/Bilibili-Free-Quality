@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      2.0
-// @description  未登录自动无限试用最高画质 + 阻止登录弹窗/自动暂停 + 解锁全部评论（v2.0）
+// @version      2.1
+// @description  未登录自动无限试用最高画质 + 阻止登录弹窗/自动暂停 + 解锁全部评论（v2.1 修复评论解锁接口覆盖范围及设置面板授权缺失）
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -13,6 +13,8 @@
 // @grant        unsafeWindow
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_addStyle
+// @grant        GM_registerMenuCommand
 // @run-at       document-start
 // ==/UserScript==
 
@@ -94,18 +96,27 @@
     
     console.log('[评论解锁] 初始化评论解锁模块');
     
+    // 判断是否为评论相关 API（覆盖 /x/v2/reply、/x/v2/reply/wbi/main、/x/v2/reply/reply 等）
+    const isCommentApiUrl = url =>
+      typeof url === 'string' &&
+      url.includes('api.bilibili.com') &&
+      url.includes('/x/v2/reply');
+
     // API拦截 - Fetch
     const originalFetch = unsafeWindow.fetch;
     unsafeWindow.fetch = function(...args) {
       const url = args[0];
+      // 统一提取 URL 字符串（兼容 string / URL / Request 三种形式）
+      const urlStr = typeof url === 'string' ? url : (url instanceof Request ? url.url : String(url));
       
       return originalFetch.apply(this, args).then(async response => {
-        if (typeof url === 'string' && url.includes('api.bilibili.com/x/v2/reply')) {
+        if (isCommentApiUrl(urlStr)) {
           try {
             const clonedResponse = response.clone();
             const data = await clonedResponse.json();
             
-            if (data.data) {
+            // 温和改写：仅在 code === 0 且数据结构符合预期时才修改
+            if (data && data.code === 0 && data.data) {
               data.data.show_bvid = true;
               data.data.need_login = false;
               
@@ -113,13 +124,16 @@
                 data.data.upper.top.need_login = false;
               }
               
-              console.log('[评论解锁] Fetch请求已处理');
+              console.log('[评论解锁] Fetch请求已处理:', urlStr);
             }
             
+            // 保留原有 headers 并确保 content-type 正确
+            const headers = new Headers(response.headers);
+            headers.set('content-type', 'application/json; charset=utf-8');
             return new Response(JSON.stringify(data), {
               status: response.status,
               statusText: response.statusText,
-              headers: response.headers
+              headers: headers
             });
           } catch (e) {
             console.error('[评论解锁] Fetch处理失败:', e);
@@ -132,29 +146,39 @@
     };
     
     // API拦截 - XMLHttpRequest
+    // 在 open 阶段注册 readystatechange 拦截器，确保先于页面业务代码的监听器执行
     const originalOpen = XMLHttpRequest.prototype.open;
     const originalSend = XMLHttpRequest.prototype.send;
     
     XMLHttpRequest.prototype.open = function(method, url, ...rest) {
       this._url = url;
+      if (typeof url === 'string' && isCommentApiUrl(url)) {
+        this.addEventListener('readystatechange', function() {
+          if (this.readyState === 4 && !this._biliIntercepted) {
+            this._biliIntercepted = true;
+            try {
+              // 通过原型 getter 读取实际响应文本，避免访问已被覆写的实例属性
+              const text = Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'responseText').get.call(this);
+              const data = JSON.parse(text);
+              // 温和改写：仅在 code === 0 且数据结构符合预期时才修改
+              if (data && data.code === 0 && data.data) {
+                data.data.need_login = false;
+                const newText = JSON.stringify(data);
+                // 用 Object.defineProperty 在实例上覆写，使后续读取返回修改后的内容
+                Object.defineProperty(this, 'responseText', { get: () => newText, configurable: true });
+                Object.defineProperty(this, 'response', { get: () => newText, configurable: true });
+                console.log('[评论解锁] XHR请求已处理:', url);
+              }
+            } catch (e) {
+              console.error('[评论解锁] XHR处理失败:', e);
+            }
+          }
+        });
+      }
       return originalOpen.call(this, method, url, ...rest);
     };
     
     XMLHttpRequest.prototype.send = function(...args) {
-      if (this._url && this._url.includes('api.bilibili.com/x/v2/reply')) {
-        const originalOnLoad = this.onload;
-        this.addEventListener('load', function() {
-          try {
-            const data = JSON.parse(this.responseText);
-            if (data.data) {
-              data.data.need_login = false;
-              console.log('[评论解锁] XHR请求已处理');
-            }
-          } catch (e) {
-            console.error('[评论解锁] XHR处理失败:', e);
-          }
-        });
-      }
       return originalSend.apply(this, args);
     };
     
