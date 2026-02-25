@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      3.0
-// @description  未登录自动无限试用最高画质 + 阻止登录弹窗/自动暂停 + 真正可用的评论解锁（v3.0 重写评论模块）
+// @version      3.1
+// @description  未登录自动无限试用最高画质 + 阻止登录弹窗/自动暂停 + 真正可用的评论解锁（v3.1 修复播放后评论消失问题）
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -21,6 +21,38 @@
 
 (async function () {
   'use strict';
+
+  /* ========== 最早执行：拦截官方评论组件挂载 + miniLogin ========== */
+  const _origAppendChild = Node.prototype.appendChild;
+  const _origInsertBefore = Node.prototype.insertBefore;
+  const _origReplaceChild = Node.prototype.replaceChild;
+
+  Node.prototype.appendChild = function(el) {
+    if (el && el.nodeType === 1) {
+      if (el.tagName === 'BILI-COMMENTS' || el.tagName === 'BILI-COMMENT-CONTAINER') {
+        console.log('[评论模块] 拦截 bili-comments appendChild');
+        return el;
+      }
+      if (el.tagName === 'SCRIPT' && el.src && el.src.includes('miniLogin')) return el;
+    }
+    return _origAppendChild.call(this, el);
+  };
+
+  Node.prototype.insertBefore = function(el, ref) {
+    if (el && el.nodeType === 1 && (el.tagName === 'BILI-COMMENTS' || el.tagName === 'BILI-COMMENT-CONTAINER')) {
+      console.log('[评论模块] 拦截 bili-comments insertBefore');
+      return el;
+    }
+    return _origInsertBefore.call(this, el, ref);
+  };
+
+  Node.prototype.replaceChild = function(newEl, oldEl) {
+    if (newEl && newEl.nodeType === 1 && (newEl.tagName === 'BILI-COMMENTS' || newEl.tagName === 'BILI-COMMENT-CONTAINER')) {
+      console.log('[评论模块] 拦截 bili-comments replaceChild');
+      return oldEl;
+    }
+    return _origReplaceChild.call(this, newEl, oldEl);
+  };
 
   /* ========== 0. 公共配置 ========== */
   const CONFIG = {
@@ -422,6 +454,29 @@
     commentSection.parentNode.insertBefore(customEl, commentSection.nextSibling);
     commentSection.style.display = 'none';
 
+    // 守护自定义评论容器，防止被官方组件重新挂载时覆盖
+    const commentGuard = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        // 如果自定义容器被移出 DOM，重新插入
+        if (!document.getElementById('bili-custom-comments')) {
+          console.log('[评论模块] 检测到自定义评论容器被移除，重新插入...');
+          const newParent = document.querySelector('.comment-container, .right-container, #commentapp')?.parentNode
+            || document.querySelector('bili-comments')?.parentNode;
+          if (newParent) {
+            newParent.appendChild(customEl);
+          }
+        }
+        // 如果有新的 bili-comments 被插入，立刻隐藏它
+        for (const node of mutation.addedNodes) {
+          if (node.nodeType === 1 && (node.tagName === 'BILI-COMMENTS' || node.tagName === 'BILI-COMMENT-CONTAINER')) {
+            node.style.display = 'none';
+            console.log('[评论模块] 守护：隐藏新出现的 bili-comments');
+          }
+        }
+      }
+    });
+    commentGuard.observe(document.body, { childList: true, subtree: true });
+
     customEl.querySelectorAll('.sort-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
         const sort = parseInt(btn.dataset.sort);
@@ -474,12 +529,7 @@
 
   /* ========== 2. 阻止登录弹窗 / 自动暂停 ========== */
   (function blockLoginAndAutoPause() {
-    /* 2-1 拦截 miniLogin.js 加载 */
-    const originAppend = Node.prototype.appendChild;
-    Node.prototype.appendChild = function (el) {
-      if (el.tagName === 'SCRIPT' && el.src && el.src.includes('miniLogin')) return el;
-      return originAppend.call(this, el);
-    };
+    /* 2-1 miniLogin 拦截已在顶层统一处理，此处无需重复 */
 
     /* 2-2 等待播放器就绪后屏蔽 getMediaInfo 返回值 */
     const waitPlayer = () => new Promise((resolve, reject) => {
