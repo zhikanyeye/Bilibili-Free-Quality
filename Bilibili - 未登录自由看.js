@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      2.1
-// @description  未登录自动无限试用最高画质 + 阻止登录弹窗/自动暂停 + 解锁全部评论（v2.1 修复评论解锁接口覆盖范围及设置面板授权缺失）
+// @version      3.0
+// @description  未登录自动无限试用最高画质 + 阻止登录弹窗/自动暂停 + 真正可用的评论解锁（v3.0 重写评论模块）
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -10,6 +10,7 @@
 // @match        https://www.bilibili.com/festival/*
 // @icon         https://www.bilibili.com/favicon.ico
 // @require      https://cdnjs.cloudflare.com/ajax/libs/spark-md5/3.0.2/spark-md5.min.js
+// @require      https://update.greasyfork.org/scripts/512574/1464548/inject-bilibili-comment-style.js
 // @grant        unsafeWindow
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -29,19 +30,14 @@
     BUTTON_CLICK_DELAY: 800,
     TOAST_CHECK_INTERVAL: 100,
     CLICK_TIMEOUT: 500,
-    TRIAL_TIMEOUT: 3e8,
-    // 评论配置
-    COMMENT_AUTO_LOAD: false,      // 默认关闭自动加载全部评论
-    COMMENT_MAX_PAGES: 20,         // 最多加载20页
-    COMMENT_PAGE_SIZE: 49,         // 每页49条（API最大值）
-    COMMENT_LOAD_DELAY: 800        // 加载延迟800ms
+    TRIAL_TIMEOUT: 3e8
   };
 
   const options = {
     preferQuality: GM_getValue('preferQuality', '1080'),
     isWaitUntilHighQualityLoaded: GM_getValue('isWaitUntilHighQualityLoaded', false),
     enableCommentUnlock: GM_getValue('enableCommentUnlock', true),
-    autoLoadAllComments: GM_getValue('autoLoadAllComments', false)
+    enableReplyPagination: GM_getValue('enableReplyPagination', false)
   };
 
   /* ========== 工具函数 ========== */
@@ -90,189 +86,388 @@
     return null;
   }
 
-  /* ========== 评论解锁模块 ========== */
-  function initCommentUnlock() {
-    if (!options.enableCommentUnlock) return;
-    
-    console.log('[评论解锁] 初始化评论解锁模块');
-    
-    // 判断是否为评论相关 API（覆盖 /x/v2/reply、/x/v2/reply/wbi/main、/x/v2/reply/reply 等）
-    const isCommentApiUrl = url =>
-      typeof url === 'string' &&
-      url.includes('api.bilibili.com') &&
-      url.includes('/x/v2/reply');
+  /* ========== 评论模块 ========== */
+  let commentOid, commentType, commentCreatorID;
+  let commentCurrentSortType = 2;
+  let commentIsLoading = false;
+  let commentIsEnd = false;
+  let commentNextOffset = '';
+  let commentPageOffsets = [''];
+  let commentCurrentPage = 0;
+  const COMMENT_SORT = { LATEST: 0, HOT: 2 };
 
-    // API拦截 - Fetch
-    const originalFetch = unsafeWindow.fetch;
-    unsafeWindow.fetch = function(...args) {
-      const url = args[0];
-      // 统一提取 URL 字符串（兼容 string / URL / Request 三种形式）
-      const urlStr = typeof url === 'string' ? url : (url instanceof Request ? url.url : String(url));
-      
-      return originalFetch.apply(this, args).then(async response => {
-        if (isCommentApiUrl(urlStr)) {
-          try {
-            const clonedResponse = response.clone();
-            const data = await clonedResponse.json();
-            
-            // 温和改写：仅在 code === 0 且数据结构符合预期时才修改
-            if (data && data.code === 0 && data.data) {
-              data.data.show_bvid = true;
-              data.data.need_login = false;
-              
-              if (data.data.upper && data.data.upper.top) {
-                data.data.upper.top.need_login = false;
-              }
-              
-              console.log('[评论解锁] Fetch请求已处理:', urlStr);
-            }
-            
-            // 保留原有 headers 并确保 content-type 正确
-            const headers = new Headers(response.headers);
-            headers.set('content-type', 'application/json; charset=utf-8');
-            return new Response(JSON.stringify(data), {
-              status: response.status,
-              statusText: response.statusText,
-              headers: headers
-            });
-          } catch (e) {
-            console.error('[评论解锁] Fetch处理失败:', e);
-            return response;
-          }
-        }
-        
-        return response;
-      });
-    };
-    
-    // API拦截 - XMLHttpRequest
-    // 在 open 阶段注册 readystatechange 拦截器，确保先于页面业务代码的监听器执行
-    const originalOpen = XMLHttpRequest.prototype.open;
-    const originalSend = XMLHttpRequest.prototype.send;
-    
-    XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-      this._url = url;
-      if (typeof url === 'string' && isCommentApiUrl(url)) {
-        this.addEventListener('readystatechange', function() {
-          if (this.readyState === 4 && !this._biliIntercepted) {
-            this._biliIntercepted = true;
-            try {
-              // 通过原型 getter 读取实际响应文本，避免访问已被覆写的实例属性
-              const text = Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'responseText').get.call(this);
-              const data = JSON.parse(text);
-              // 温和改写：仅在 code === 0 且数据结构符合预期时才修改
-              if (data && data.code === 0 && data.data) {
-                data.data.need_login = false;
-                const newText = JSON.stringify(data);
-                // 用 Object.defineProperty 在实例上覆写，使后续读取返回修改后的内容
-                Object.defineProperty(this, 'responseText', { get: () => newText, configurable: true });
-                Object.defineProperty(this, 'response', { get: () => newText, configurable: true });
-                console.log('[评论解锁] XHR请求已处理:', url);
-              }
-            } catch (e) {
-              console.error('[评论解锁] XHR处理失败:', e);
-            }
-          }
-        });
-      }
-      return originalOpen.call(this, method, url, ...rest);
-    };
-    
-    XMLHttpRequest.prototype.send = function(...args) {
-      return originalSend.apply(this, args);
-    };
-    
-    // DOM清理 - 移除登录提示元素
-    function cleanupLoginPrompts() {
-      const selectors = [
-        '.login-tip',
-        '.reply-notice',
-        '.login-panel',
-        '.bili-comments-login-tip'
-      ];
-      
-      selectors.forEach(selector => {
-        document.querySelectorAll(selector).forEach(el => {
-          try {
-            el.remove();
-            console.log(`[评论解锁] 已移除登录提示: ${selector}`);
-          } catch (e) {}
-        });
+  async function getWbiQueryString(params) {
+    const { img_url, sub_url } = await fetch('https://api.bilibili.com/x/web-interface/nav')
+      .then(res => res.json())
+      .then(json => json.data.wbi_img);
+    const imgKey = img_url.slice(img_url.lastIndexOf('/') + 1, img_url.lastIndexOf('.'));
+    const subKey = sub_url.slice(sub_url.lastIndexOf('/') + 1, sub_url.lastIndexOf('.'));
+    const originKey = imgKey + subKey;
+    const mixinKeyEncryptTable = [46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,33,9,42,19,29,28,14,39,12,38,41,13,37,48,7,16,24,55,40,61,26,17,0,1,60,51,30,4,22,25,54,21,56,59,6,63,57,62,11,36,20,34,44,52];
+    const mixinKey = mixinKeyEncryptTable.map(n => originKey[n]).join('').slice(0, 32);
+    const query = Object.keys(params).sort().map(key => {
+      const value = params[key].toString().replace(/[!'()*]/g, '');
+      return `${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
+    }).join('&');
+    const wbiSign = SparkMD5.hash(query + mixinKey);
+    return query + '&w_rid=' + wbiSign;
+  }
+
+  function b2a(bvid) {
+    const XOR_CODE = 23442827791579n;
+    const MASK_CODE = 2251799813685247n;
+    const BASE = 58n;
+    const ALPHABET = 'FcwAPNKTMug3GV5Lj7EJnHpWsx4tb8haYeviqBz6rkCy12mUSDQX9RdoZf'.split('');
+    const DIGIT_MAP = [0,1,2,9,7,5,6,4,8,3,10,11];
+    const BV_LEN = 12;
+    let r = 0n;
+    for (let i = 3; i < BV_LEN; i++) {
+      r = r * BASE + BigInt(ALPHABET.indexOf(bvid[DIGIT_MAP[i]]));
+    }
+    return `${r & MASK_CODE ^ XOR_CODE}`;
+  }
+
+  function commentFormatTime(ts) {
+    const d = new Date(ts * 1000);
+    const now = new Date();
+    const diff = (now - d) / 1000;
+    if (diff < 60) return '刚刚';
+    if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`;
+    if (diff < 86400 * 30) return `${Math.floor(diff / 86400)}天前`;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  function escapeHtml(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function renderReplyContent(reply) {
+    let text = escapeHtml(reply.content?.message || '');
+    if (reply.content?.emote) {
+      Object.entries(reply.content.emote).forEach(([key, emote]) => {
+        const esc = escapeHtml(key);
+        text = text.replace(
+          new RegExp(esc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'),
+          `<img class="reply-emote" src="${escapeHtml(emote.url)}" alt="${esc}" />`
+        );
       });
     }
-    
-    // 使用 MutationObserver 监听DOM变化
-    const commentObserver = new MutationObserver(() => {
-      cleanupLoginPrompts();
-    });
-    
-    // 等待页面加载完成后启动观察器
-    const startCommentObserver = () => {
-      if (document.body) {
-        commentObserver.observe(document.body, {
-          childList: true,
-          subtree: true
-        });
-        cleanupLoginPrompts(); // 立即清理一次
-      }
-    };
-    
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', startCommentObserver);
-    } else {
-      startCommentObserver();
+    text = text.replace(/@([^\s,，：:@\n]+)/g, '<a class="reply-mention" href="javascript:void(0)">@$1</a>');
+    return text;
+  }
+
+  function appendCommentItem(replyData, isTop) {
+    const list = document.getElementById('bili-comment-list');
+    if (!list) return;
+
+    const isVip = replyData.member?.vip?.vipStatus === 1;
+    const isUp = Number(replyData.mid) === Number(commentCreatorID);
+    const level = replyData.member?.level_info?.current_level || 0;
+    const nameStyle = isVip ? ' style="color:#fb7299"' : '';
+    const upBadge = isUp ? '<span class="reply-up-badge">UP主</span>' : '';
+    const subReplies = (replyData.replies || []).slice(0, 3);
+    const subCount = replyData.rcount || 0;
+
+    let subHtml = '';
+    if (subReplies.length > 0) {
+      const subItems = subReplies.map(sub => {
+        const sVip = sub.member?.vip?.vipStatus === 1;
+        const sUp = Number(sub.mid) === Number(commentCreatorID);
+        return `<div class="sub-reply-item">
+          <a class="sub-reply-avatar" href="https://space.bilibili.com/${sub.mid}" target="_blank"><img src="${escapeHtml(sub.member?.avatar || '')}" alt="" loading="lazy" /></a>
+          <div class="sub-reply-main">
+            <a class="sub-reply-username" href="https://space.bilibili.com/${sub.mid}" target="_blank"${sVip ? ' style="color:#fb7299"' : ''}>${escapeHtml(sub.member?.uname || '')}</a>${sUp ? '<span class="reply-up-badge reply-up-badge-sm">UP主</span>' : ''}：<span class="sub-reply-text">${renderReplyContent(sub)}</span>
+            <span class="sub-reply-time">${commentFormatTime(sub.ctime)}</span>
+          </div>
+        </div>`;
+      }).join('');
+      const moreBtn = subCount > 3
+        ? `<div class="sub-reply-more" data-rpid="${replyData.rpid}" data-count="${subCount}">共 ${subCount} 条回复，点击查看全部 &gt;</div>`
+        : '';
+      subHtml = `<div class="sub-reply-list">${subItems}${moreBtn}</div>`;
     }
-    
-    // 自动加载所有评论（可选）
-    if (options.autoLoadAllComments) {
-      console.log('[评论解锁] 启用自动加载所有评论');
-      
-      async function autoLoadComments() {
-        try {
-          await sleep(3000); // 等待页面加载
-          
-          const oid = getVideoOid();
-          if (!oid) {
-            console.warn('[评论解锁] 未找到视频AID，跳过自动加载');
-            return;
-          }
-          
-          console.log(`[评论解锁] 开始自动加载评论，视频AID: ${oid}`);
-          
-          for (let page = 1; page <= CONFIG.COMMENT_MAX_PAGES; page++) {
-            try {
-              const url = `https://api.bilibili.com/x/v2/reply?type=1&oid=${oid}&pn=${page}&ps=${CONFIG.COMMENT_PAGE_SIZE}`;
-              const response = await fetch(url);
-              const data = await response.json();
-              
-              if (data.code === 0 && data.data && data.data.replies && data.data.replies.length > 0) {
-                console.log(`[评论解锁] 已加载第 ${page} 页评论，共 ${data.data.replies.length} 条`);
-                await sleep(CONFIG.COMMENT_LOAD_DELAY);
-              } else {
-                console.log(`[评论解锁] 评论加载完成，共 ${page - 1} 页`);
-                break;
-              }
-            } catch (e) {
-              console.error(`[评论解锁] 加载第 ${page} 页失败:`, e);
-              break;
-            }
-          }
-        } catch (e) {
-          console.error('[评论解锁] 自动加载失败:', e);
+
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = `<div class="reply-item${isTop ? ' reply-top' : ''}" data-rpid="${replyData.rpid}">
+      <a class="reply-avatar" href="https://space.bilibili.com/${replyData.mid}" target="_blank"><img src="${escapeHtml(replyData.member?.avatar || '')}" alt="" loading="lazy" /></a>
+      <div class="reply-main">
+        <div class="reply-header">
+          <a class="reply-username" href="https://space.bilibili.com/${replyData.mid}" target="_blank"${nameStyle}>${escapeHtml(replyData.member?.uname || '')}</a>${upBadge}<span class="reply-level lv-${level}">Lv.${level}</span>
+        </div>
+        <div class="reply-text">${renderReplyContent(replyData)}</div>
+        <div class="reply-footer">
+          <span class="reply-time">${commentFormatTime(replyData.ctime)}</span>
+          <span class="reply-likes">👍 ${replyData.like || 0}</span>
+        </div>
+        ${subHtml}
+      </div>
+    </div>`;
+
+    const item = wrapper.firstElementChild;
+    const moreEl = item.querySelector('.sub-reply-more');
+    if (moreEl) {
+      moreEl.addEventListener('click', () => {
+        loadSubReplies(replyData.rpid, item.querySelector('.sub-reply-list'), parseInt(moreEl.dataset.count), 1);
+      });
+    }
+    list.appendChild(item);
+  }
+
+  async function loadSubReplies(rootReplyID, container, totalCount, pageNum) {
+    if (!container) return;
+    const loadEl = document.createElement('div');
+    loadEl.className = 'sub-reply-loading';
+    loadEl.textContent = '加载中...';
+    container.appendChild(loadEl);
+    try {
+      const res = await fetch(
+        `https://api.bilibili.com/x/v2/reply/reply?oid=${commentOid}&root=${rootReplyID}&pn=${pageNum}&ps=10&type=${commentType}`
+      );
+      const data = await res.json();
+      loadEl.remove();
+      if (data.code === 0 && data.data?.replies) {
+        if (pageNum === 1) container.innerHTML = '';
+        data.data.replies.forEach(sub => {
+          const sVip = sub.member?.vip?.vipStatus === 1;
+          const sUp = Number(sub.mid) === Number(commentCreatorID);
+          const el = document.createElement('div');
+          el.className = 'sub-reply-item';
+          el.innerHTML = `
+            <a class="sub-reply-avatar" href="https://space.bilibili.com/${sub.mid}" target="_blank"><img src="${escapeHtml(sub.member?.avatar || '')}" alt="" loading="lazy" /></a>
+            <div class="sub-reply-main">
+              <a class="sub-reply-username" href="https://space.bilibili.com/${sub.mid}" target="_blank"${sVip ? ' style="color:#fb7299"' : ''}>${escapeHtml(sub.member?.uname || '')}</a>${sUp ? '<span class="reply-up-badge reply-up-badge-sm">UP主</span>' : ''}：<span class="sub-reply-text">${renderReplyContent(sub)}</span>
+              <span class="sub-reply-time">${commentFormatTime(sub.ctime)}</span>
+            </div>`;
+          container.appendChild(el);
+        });
+        const loaded = pageNum * 10;
+        if (loaded < totalCount) {
+          const nextBtn = document.createElement('div');
+          nextBtn.className = 'sub-reply-more';
+          nextBtn.textContent = `继续加载（还有 ${totalCount - loaded} 条）`;
+          nextBtn.addEventListener('click', () => { nextBtn.remove(); loadSubReplies(rootReplyID, container, totalCount, pageNum + 1); });
+          container.appendChild(nextBtn);
         }
       }
-      
-      // 延迟启动自动加载
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', autoLoadComments);
-      } else {
-        autoLoadComments();
-      }
+    } catch(e) {
+      loadEl.remove();
+      console.error('[评论模块] 子评论加载失败:', e);
     }
   }
 
-  /* ========== 初始化评论解锁（无论是否登录都执行） ========== */
-  initCommentUnlock();
+  async function getCommentPaginationData(offset) {
+    const mode = commentCurrentSortType === COMMENT_SORT.HOT ? 3 : 2;
+    const paginationStr = JSON.stringify({ offset: offset || '' });
+    const wts = Math.floor(Date.now() / 1000);
+    const qs = await getWbiQueryString({ oid: commentOid, type: commentType, mode, pagination_str: paginationStr, wts });
+    const res = await fetch(`https://api.bilibili.com/x/v2/reply/wbi/main?${qs}`);
+    return res.json();
+  }
+
+  async function loadCommentPage(offset, appendToList) {
+    if (commentIsLoading) return;
+    commentIsLoading = true;
+    const loader = document.getElementById('bili-comment-loader');
+    if (loader) loader.style.display = 'block';
+    try {
+      const data = await getCommentPaginationData(offset);
+      if (data.code !== 0) {
+        console.error('[评论模块] API错误:', data.code, data.message);
+        return;
+      }
+      const list = document.getElementById('bili-comment-list');
+      if (!appendToList && list) list.innerHTML = '';
+      if (!appendToList) {
+        const topReply = data.data?.top?.upper;
+        if (topReply) appendCommentItem(topReply, true);
+      }
+      (data.data?.replies || []).forEach(r => appendCommentItem(r, false));
+      const nextOffset = data.data?.cursor?.pagination_reply?.next_offset || '';
+      const isEnd = !nextOffset || !!data.data?.cursor?.is_end;
+      commentIsEnd = isEnd;
+      commentNextOffset = nextOffset;
+      if (options.enableReplyPagination) {
+        if (!isEnd) commentPageOffsets[commentCurrentPage + 1] = nextOffset;
+        updatePaginationControls();
+      } else {
+        if (isEnd) {
+          const endEl = document.getElementById('bili-comment-end');
+          if (endEl) endEl.style.display = 'block';
+        }
+      }
+    } catch(e) {
+      console.error('[评论模块] 加载评论失败:', e);
+    } finally {
+      commentIsLoading = false;
+      if (loader) loader.style.display = 'none';
+    }
+  }
+
+  function updatePaginationControls() {
+    const pageInfo = document.getElementById('bili-page-info');
+    const prevBtn = document.getElementById('bili-prev-page');
+    const nextBtn = document.getElementById('bili-next-page');
+    if (pageInfo) pageInfo.textContent = `第 ${commentCurrentPage + 1} 页`;
+    if (prevBtn) prevBtn.disabled = commentCurrentPage === 0;
+    if (nextBtn) nextBtn.disabled = commentIsEnd;
+  }
+
+  async function initCommentModule() {
+    if (!options.enableCommentUnlock) return;
+
+    commentCurrentSortType = COMMENT_SORT.HOT;
+    commentIsLoading = false;
+    commentIsEnd = false;
+    commentNextOffset = '';
+    commentPageOffsets = [''];
+    commentCurrentPage = 0;
+
+    GM_addStyle(`
+#bili-custom-comments{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB",sans-serif;font-size:14px;color:#222;padding:16px 0}
+.bili-comment-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid #e3e5e7}
+.bili-comment-title{font-size:18px;font-weight:700;color:#18191c}
+.bili-comment-sort{display:flex;gap:16px}
+.sort-btn{cursor:pointer;color:#9499a0;font-size:14px;padding:4px 8px;border-radius:4px;transition:color .2s}
+.sort-btn.active{color:#00aeec;font-weight:700}
+.sort-btn:hover{color:#00aeec}
+.reply-item{display:flex;gap:12px;padding:16px 0;border-bottom:1px solid #e3e5e7}
+.reply-item.reply-top{background:#fef9f0;border-radius:8px;padding:16px;margin-bottom:8px;border-bottom:none}
+.reply-avatar img{width:40px;height:40px;border-radius:50%;object-fit:cover;background:#e3e5e7}
+.reply-main{flex:1;min-width:0}
+.reply-header{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+.reply-username{color:#61666d;font-weight:600;text-decoration:none}
+.reply-username:hover{color:#00aeec}
+.reply-level{font-size:11px;padding:1px 4px;border-radius:3px;background:#e3e5e7;color:#9499a0}
+.lv-3,.lv-4{background:#e8ffe8;color:#52c41a}
+.lv-5,.lv-6{background:#fff7e6;color:#fa8c16}
+.reply-up-badge{font-size:11px;padding:1px 4px;border-radius:3px;background:#fb7299;color:#fff}
+.reply-up-badge-sm{font-size:10px;padding:0 3px}
+.reply-text{color:#18191c;line-height:1.7;word-break:break-word;margin-bottom:8px}
+.reply-emote{height:20px;vertical-align:middle}
+.reply-mention{color:#00aeec;text-decoration:none}
+.reply-footer{display:flex;align-items:center;gap:16px;color:#9499a0;font-size:12px}
+.sub-reply-list{margin-top:10px;background:#f6f7f8;border-radius:8px;padding:8px 12px}
+.sub-reply-item{display:flex;gap:8px;padding:6px 0;border-bottom:1px solid #e3e5e7}
+.sub-reply-item:last-child{border-bottom:none}
+.sub-reply-avatar img{width:24px;height:24px;border-radius:50%;object-fit:cover;background:#e3e5e7}
+.sub-reply-main{flex:1;min-width:0;font-size:13px;line-height:1.6}
+.sub-reply-username{color:#61666d;font-weight:600;text-decoration:none;margin-right:2px}
+.sub-reply-username:hover{color:#00aeec}
+.sub-reply-text{color:#18191c;word-break:break-word}
+.sub-reply-time{color:#9499a0;font-size:11px;margin-left:6px}
+.sub-reply-more{cursor:pointer;color:#00aeec;font-size:13px;padding:8px 0;text-align:center}
+.sub-reply-more:hover{opacity:.8}
+.sub-reply-loading{color:#9499a0;font-size:13px;padding:6px 0;text-align:center}
+#bili-comment-loader{text-align:center;padding:16px;color:#9499a0}
+#bili-comment-end{text-align:center;padding:16px;color:#9499a0;font-size:13px}
+#bili-scroll-anchor{height:1px}
+#bili-comment-pagination{display:flex;justify-content:center;align-items:center;gap:16px;padding:16px 0}
+#bili-comment-pagination button{padding:6px 16px;border:1px solid #ddd;border-radius:4px;cursor:pointer;background:#fff;color:#555;transition:all .2s}
+#bili-comment-pagination button:hover:not(:disabled){border-color:#00aeec;color:#00aeec}
+#bili-comment-pagination button:disabled{opacity:.5;cursor:not-allowed}
+#bili-page-info{color:#555;font-size:14px}
+`);
+
+    let commentSection;
+    try {
+      commentSection = await waitForElement('bili-comments, .comment-container, #commentapp', 20000);
+    } catch(e) {
+      console.warn('[评论模块] 未找到评论容器:', e.message);
+      return;
+    }
+
+    try {
+      const state = unsafeWindow.__INITIAL_STATE__;
+      commentOid = String(state?.aid || state?.videoData?.aid || '');
+      if (!commentOid || commentOid === 'undefined') {
+        const bvMatch = location.pathname.match(/BV[\w]+/i);
+        if (bvMatch) commentOid = b2a(bvMatch[0]);
+      }
+      commentType = 1;
+      commentCreatorID = state?.upData?.mid || state?.videoData?.owner?.mid || 0;
+    } catch(e) {
+      console.error('[评论模块] 获取视频信息失败:', e);
+      return;
+    }
+
+    if (!commentOid) {
+      console.warn('[评论模块] 无法获取视频AID');
+      return;
+    }
+
+    console.log(`[评论模块] 初始化，oid=${commentOid}, type=${commentType}, creator=${commentCreatorID}`);
+
+    const customEl = document.createElement('div');
+    customEl.id = 'bili-custom-comments';
+    customEl.innerHTML = `
+      <div class="bili-comment-header">
+        <span class="bili-comment-title">评论</span>
+        <div class="bili-comment-sort">
+          <span class="sort-btn active" data-sort="2">最热</span>
+          <span class="sort-btn" data-sort="0">最新</span>
+        </div>
+      </div>
+      <div id="bili-comment-list"></div>
+      <div id="bili-comment-loader" style="display:none">加载中...</div>
+      <div id="bili-comment-end" style="display:none">没有更多评论了</div>
+      ${options.enableReplyPagination
+        ? `<div id="bili-comment-pagination"><button id="bili-prev-page" disabled>上一页</button><span id="bili-page-info">第 1 页</span><button id="bili-next-page">下一页</button></div>`
+        : `<div id="bili-scroll-anchor"></div>`}`;
+
+    commentSection.parentNode.insertBefore(customEl, commentSection.nextSibling);
+    commentSection.style.display = 'none';
+
+    customEl.querySelectorAll('.sort-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const sort = parseInt(btn.dataset.sort);
+        if (sort === commentCurrentSortType) return;
+        commentCurrentSortType = sort;
+        customEl.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        commentNextOffset = '';
+        commentPageOffsets = [''];
+        commentCurrentPage = 0;
+        commentIsEnd = false;
+        document.getElementById('bili-comment-end').style.display = 'none';
+        await loadCommentPage('', false);
+      });
+    });
+
+    if (options.enableReplyPagination) {
+      document.getElementById('bili-next-page').addEventListener('click', async () => {
+        if (commentIsEnd || commentIsLoading) return;
+        commentCurrentPage++;
+        await loadCommentPage(commentPageOffsets[commentCurrentPage] || '', false);
+      });
+      document.getElementById('bili-prev-page').addEventListener('click', async () => {
+        if (commentCurrentPage <= 0 || commentIsLoading) return;
+        commentCurrentPage--;
+        commentIsEnd = false;
+        await loadCommentPage(commentPageOffsets[commentCurrentPage] || '', false);
+      });
+      await loadCommentPage('', false);
+    } else {
+      const anchor = document.getElementById('bili-scroll-anchor');
+      const scrollObserver = new IntersectionObserver(async () => {
+        if (!commentIsLoading && !commentIsEnd) {
+          await loadCommentPage(commentNextOffset, commentNextOffset !== '');
+        }
+      }, { rootMargin: '300px' });
+      scrollObserver.observe(anchor);
+    }
+  }
+
+  /* ========== 初始化评论模块（无论是否登录都执行） ========== */
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initCommentModule);
+  } else {
+    initCommentModule();
+  }
 
   /* ========== 1. 如果已登录直接退出 ========== */
   if (document.cookie.includes('DedeUserID')) return;
@@ -449,8 +644,8 @@ select:hover{border-color:#00aeec}
         <span class="switch" data-key="enableCommentUnlock" data-status="${options.enableCommentUnlock ? 'on' : 'off'}"></span>
       </div>
       <div class="qp-row">
-        <span class="qp-label">自动加载所有评论</span>
-        <span class="switch" data-key="autoLoadAllComments" data-status="${options.autoLoadAllComments ? 'on' : 'off'}"></span>
+        <span class="qp-label">分页加载评论</span>
+        <span class="switch" data-key="enableReplyPagination" data-status="${options.enableReplyPagination ? 'on' : 'off'}"></span>
       </div>
       <button class="qp-close-btn" onclick="this.parentElement.parentElement.style.display='none'">✓ 保存并关闭</button>
     </div>`;
@@ -524,8 +719,8 @@ select:hover{border-color:#00aeec}
           options.isWaitUntilHighQualityLoaded = isOn;
         } else if (key === 'enableCommentUnlock') {
           options.enableCommentUnlock = isOn;
-        } else if (key === 'autoLoadAllComments') {
-          options.autoLoadAllComments = isOn;
+        } else if (key === 'enableReplyPagination') {
+          options.enableReplyPagination = isOn;
         }
         
         GM_setValue(key, isOn);
