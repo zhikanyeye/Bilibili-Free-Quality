@@ -1,7 +1,7 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Version](https://img.shields.io/badge/version-3.0-green)
+![Version](https://img.shields.io/badge/version-3.1-green)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 
 ## 📌 简介
@@ -70,6 +70,12 @@
 6. 自建评论渲染逻辑，支持无限滚动与分页两种模式，支持子评论展开
 
 ## 🔄 更新日志
+
+### v3.1 (2026-02-25)
+- 🐛 **修复**：播放视频或页面数据加载完成后评论消失的问题
+- 🛡️ **防御**：在 document-start 阶段拦截官方 `<bili-comments>` 组件挂载
+- 🔒 **守护**：新增 MutationObserver 守护自定义评论容器，防止被覆盖
+- 🔧 **合并**：统一 Node.prototype 覆写，消除潜在的多重覆写冲突
 
 ### v3.0 (2026-02-25)
 - 🔧 **重大修复**：彻底重写评论模块，解决评论无法加载的问题
