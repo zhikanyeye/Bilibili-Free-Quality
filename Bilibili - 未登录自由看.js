@@ -22,50 +22,8 @@
 (async function () {
   'use strict';
 
-  /* ========== 隐藏登录弹窗的 CSS（更精确的选择器） ========== */
-  GM_addStyle(`
-  /* 只隐藏登录相关的弹窗，不影响其他元素 */
-  .bili-mini-mask[style*="z-index"],
-  .bili-mini-wrapper[style*="z-index"],
-  .bpx-player-toast-login,
-  .login-tip,
-  .login-panel-popover {
-    display: none !important;
-    pointer-events: none !important;
-    visibility: hidden !important;
-  }
-`);
-
-  /* ========== 最早执行：拦截官方评论组件挂载 ========== */
+  /* ========== 最早执行：保存原始 DOM 方法 ========== */
   const _origAppendChild = Node.prototype.appendChild;
-  const _origInsertBefore = Node.prototype.insertBefore;
-  const _origReplaceChild = Node.prototype.replaceChild;
-
-  Node.prototype.appendChild = function(el) {
-    if (el && el.nodeType === 1) {
-      if (el.tagName === 'BILI-COMMENTS' || el.tagName === 'BILI-COMMENT-CONTAINER') {
-        console.log('[评论模块] 拦截 bili-comments appendChild');
-        return el;
-      }
-    }
-    return _origAppendChild.call(this, el);
-  };
-
-  Node.prototype.insertBefore = function(el, ref) {
-    if (el && el.nodeType === 1 && (el.tagName === 'BILI-COMMENTS' || el.tagName === 'BILI-COMMENT-CONTAINER')) {
-      console.log('[评论模块] 拦截 bili-comments insertBefore');
-      return el;
-    }
-    return _origInsertBefore.call(this, el, ref);
-  };
-
-  Node.prototype.replaceChild = function(newEl, oldEl) {
-    if (newEl && newEl.nodeType === 1 && (newEl.tagName === 'BILI-COMMENTS' || newEl.tagName === 'BILI-COMMENT-CONTAINER')) {
-      console.log('[评论模块] 拦截 bili-comments replaceChild');
-      return oldEl;
-    }
-    return _origReplaceChild.call(this, newEl, oldEl);
-  };
 
   /* ========== 0. 公共配置 ========== */
   const CONFIG = {
@@ -130,6 +88,43 @@
     
     return null;
   }
+
+  /* ========== 拦截官方评论组件（仅用于评论模块） ========== */
+  const _origInsertBefore = Node.prototype.insertBefore;
+  const _origReplaceChild = Node.prototype.replaceChild;
+
+  // 重写 appendChild 以同时拦截 miniLogin 和评论组件
+  Node.prototype.appendChild = function(el) {
+    if (el && el.nodeType === 1) {
+      // 拦截 miniLogin 脚本
+      if (el.tagName === 'SCRIPT' && el.src && el.src.includes('miniLogin')) {
+        console.log('[Bilibili脚本] 拦截 miniLogin 脚本加载');
+        return el;
+      }
+      // 拦截官方评论组件
+      if (el.tagName === 'BILI-COMMENTS' || el.tagName === 'BILI-COMMENT-CONTAINER') {
+        console.log('[评论模块] 拦截 bili-comments appendChild');
+        return el;
+      }
+    }
+    return _origAppendChild.call(this, el);
+  };
+
+  Node.prototype.insertBefore = function(el, ref) {
+    if (el && el.nodeType === 1 && (el.tagName === 'BILI-COMMENTS' || el.tagName === 'BILI-COMMENT-CONTAINER')) {
+      console.log('[评论模块] 拦截 bili-comments insertBefore');
+      return el;
+    }
+    return _origInsertBefore.call(this, el, ref);
+  };
+
+  Node.prototype.replaceChild = function(newEl, oldEl) {
+    if (newEl && newEl.nodeType === 1 && (newEl.tagName === 'BILI-COMMENTS' || newEl.tagName === 'BILI-COMMENT-CONTAINER')) {
+      console.log('[评论模块] 拦截 bili-comments replaceChild');
+      return oldEl;
+    }
+    return _origReplaceChild.call(this, newEl, oldEl);
+  };
 
   /* ========== 评论模块 ========== */
   let commentOid, commentType, commentCreatorID;
@@ -606,32 +601,23 @@
         return { absolutePlayTime: 0, relativePlayTime: info.relativePlayTime, playUrl: info.playUrl };
       };
 
-      /* 2-2 禁止脚本自动暂停，但允许用户主动暂停 */
-      let userActionAllowed = true; // 默认允许用户操作
-      let lastUserActionTime = 0;
+      /* 2-2 禁止脚本自动暂停（只允许用户点击或按空格后暂停） */
+      let clicked = false;
+      document.addEventListener('click', () => {
+        clicked = true;
+        setTimeout(() => (clicked = false), CONFIG.CLICK_TIMEOUT);
+      }, { passive: true });
       
-      const registerUserAction = () => {
-        userActionAllowed = true;
-        lastUserActionTime = Date.now();
-      };
-      
-      document.addEventListener('click', registerUserAction, { passive: true });
       document.addEventListener('keydown', (e) => {
-        if (e.code === 'Space' || e.key === ' ') registerUserAction();
+        if (e.code === 'Space' || e.key === ' ') {
+          clicked = true;
+          setTimeout(() => (clicked = false), CONFIG.CLICK_TIMEOUT);
+        }
       }, { passive: true });
       
       const originPause = unsafeWindow.player.pause;
       unsafeWindow.player.pause = function () {
-        const currentTime = this.getCurrentTime?.() || 0;
-        const timeSinceUserAction = Date.now() - lastUserActionTime;
-        
-        // 如果在 60-70 秒之间暂停，且不是用户刚刚操作的，则阻止（这是试用限制）
-        if (currentTime >= 60 && currentTime <= 70 && timeSinceUserAction > 1000) {
-          console.log('[Bilibili脚本] 阻止试用限制暂停，当前时间:', currentTime);
-          return;
-        }
-        
-        // 其他情况正常暂停
+        if (!clicked) return;
         return originPause.apply(this, arguments);
       };
     }).catch(err => {
