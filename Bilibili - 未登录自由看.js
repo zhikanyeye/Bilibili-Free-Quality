@@ -22,13 +22,17 @@
 (async function () {
   'use strict';
 
-  /* ========== 隐藏登录弹窗的 CSS ========== */
+  /* ========== 隐藏登录弹窗的 CSS（更精确的选择器） ========== */
   GM_addStyle(`
-  .bili-mini-mask,
-  .bili-mini-wrapper,
-  .bpx-player-toast-login {
+  /* 只隐藏登录相关的弹窗，不影响其他元素 */
+  .bili-mini-mask[style*="z-index"],
+  .bili-mini-wrapper[style*="z-index"],
+  .bpx-player-toast-login,
+  .login-tip,
+  .login-panel-popover {
     display: none !important;
     pointer-events: none !important;
+    visibility: hidden !important;
   }
 `);
 
@@ -602,20 +606,32 @@
         return { absolutePlayTime: 0, relativePlayTime: info.relativePlayTime, playUrl: info.playUrl };
       };
 
-      /* 2-2 禁止脚本自动暂停，支持用户点击和空格键暂停 */
-      let clicked = false;
+      /* 2-2 禁止脚本自动暂停，但允许用户主动暂停 */
+      let userActionAllowed = true; // 默认允许用户操作
+      let lastUserActionTime = 0;
+      
       const registerUserAction = () => {
-        clicked = true;
-        setTimeout(() => (clicked = false), CONFIG.CLICK_TIMEOUT);
+        userActionAllowed = true;
+        lastUserActionTime = Date.now();
       };
+      
       document.addEventListener('click', registerUserAction, { passive: true });
       document.addEventListener('keydown', (e) => {
-        if (e.code === 'Space') registerUserAction();
+        if (e.code === 'Space' || e.key === ' ') registerUserAction();
       }, { passive: true });
       
       const originPause = unsafeWindow.player.pause;
       unsafeWindow.player.pause = function () {
-        if (!clicked) return;
+        const currentTime = this.getCurrentTime?.() || 0;
+        const timeSinceUserAction = Date.now() - lastUserActionTime;
+        
+        // 如果在 60-70 秒之间暂停，且不是用户刚刚操作的，则阻止（这是试用限制）
+        if (currentTime >= 60 && currentTime <= 70 && timeSinceUserAction > 1000) {
+          console.log('[Bilibili脚本] 阻止试用限制暂停，当前时间:', currentTime);
+          return;
+        }
+        
+        // 其他情况正常暂停
         return originPause.apply(this, arguments);
       };
     }).catch(err => {
