@@ -468,10 +468,11 @@
         // 如果自定义容器被移出 DOM，重新插入
         if (!document.getElementById('bili-custom-comments')) {
           console.log('[评论模块] 检测到自定义评论容器被移除，重新插入...');
-          const newParent = document.querySelector('.comment-container, .right-container, #commentapp')?.parentNode
-            || document.querySelector('bili-comments')?.parentNode;
-          if (newParent) {
-            newParent.appendChild(customEl);
+          const commentSectionNow = document.querySelector('bili-comments, .comment-container, #commentapp');
+          if (commentSectionNow && commentSectionNow.parentNode) {
+            // 使用 insertBefore 而不是 appendChild，保持原有位置关系
+            commentSectionNow.parentNode.insertBefore(customEl, commentSectionNow.nextSibling);
+            commentSectionNow.style.display = 'none';
           }
         }
         // 如果有新的 bili-comments 被插入，立刻隐藏它
