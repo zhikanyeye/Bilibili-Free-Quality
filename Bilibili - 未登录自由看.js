@@ -96,10 +96,10 @@
   // 重写 appendChild 以同时拦截 miniLogin 和评论组件
   Node.prototype.appendChild = function(el) {
     if (el && el.nodeType === 1) {
-      // 拦截 miniLogin 脚本
+      // 拦截 miniLogin 脚本 - 返回 null 防止加载
       if (el.tagName === 'SCRIPT' && el.src && el.src.includes('miniLogin')) {
         console.log('[Bilibili脚本] 拦截 miniLogin 脚本加载');
-        return el;
+        return null;
       }
       // 拦截官方评论组件
       if (el.tagName === 'BILI-COMMENTS' || el.tagName === 'BILI-COMMENT-CONTAINER') {
@@ -601,23 +601,23 @@
         return { absolutePlayTime: 0, relativePlayTime: info.relativePlayTime, playUrl: info.playUrl };
       };
 
-      /* 2-2 禁止脚本自动暂停（只允许用户点击或按空格后暂停） */
-      let clicked = false;
+      /* 2-2 禁止脚本自动暂停（只允许用户点击后短时间内暂停） */
+      let isClickedRecently = false;
       document.addEventListener('click', () => {
-        clicked = true;
-        setTimeout(() => (clicked = false), CONFIG.CLICK_TIMEOUT);
+        isClickedRecently = true;
+        setTimeout(() => (isClickedRecently = false), CONFIG.CLICK_TIMEOUT);
       }, { passive: true });
       
       document.addEventListener('keydown', (e) => {
         if (e.code === 'Space' || e.key === ' ') {
-          clicked = true;
-          setTimeout(() => (clicked = false), CONFIG.CLICK_TIMEOUT);
+          isClickedRecently = true;
+          setTimeout(() => (isClickedRecently = false), CONFIG.CLICK_TIMEOUT);
         }
       }, { passive: true });
       
       const originPause = unsafeWindow.player.pause;
       unsafeWindow.player.pause = function () {
-        if (!clicked) return;
+        if (!isClickedRecently) return;
         return originPause.apply(this, arguments);
       };
     }).catch(err => {
