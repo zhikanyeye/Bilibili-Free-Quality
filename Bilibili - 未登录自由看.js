@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      3.3
-// @description  未登录自动无限试用最高画质 + 阻止登录弹窗/自动暂停 + 真正可用的评论解锁（v3.3 修复工具栏重载后搜索框消失、增强防自动暂停）
+// @version      3.2
+// @description  未登录自动无限试用最高画质 + 阻止登录弹窗/自动暂停 + 真正可用的评论解锁
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -21,9 +21,6 @@
 
 (async function () {
   'use strict';
-
-  /* ========== 最早执行：保存原始 DOM 方法 ========== */
-  const _origAppendChild = Node.prototype.appendChild;
 
   /* ========== 0. 公共配置 ========== */
   const CONFIG = {
@@ -88,38 +85,6 @@
     
     return null;
   }
-
-  /* ========== 拦截官方评论组件（仅用于评论模块） ========== */
-  const _origInsertBefore = Node.prototype.insertBefore;
-  const _origReplaceChild = Node.prototype.replaceChild;
-
-  // 重写 appendChild 以拦截评论组件
-  Node.prototype.appendChild = function(el) {
-    if (el && el.nodeType === 1) {
-      // 拦截官方评论组件
-      if (el.tagName === 'BILI-COMMENTS' || el.tagName === 'BILI-COMMENT-CONTAINER') {
-        console.log('[评论模块] 拦截 bili-comments appendChild');
-        return el;
-      }
-    }
-    return _origAppendChild.call(this, el);
-  };
-
-  Node.prototype.insertBefore = function(el, ref) {
-    if (el && el.nodeType === 1 && (el.tagName === 'BILI-COMMENTS' || el.tagName === 'BILI-COMMENT-CONTAINER')) {
-      console.log('[评论模块] 拦截 bili-comments insertBefore');
-      return el;
-    }
-    return _origInsertBefore.call(this, el, ref);
-  };
-
-  Node.prototype.replaceChild = function(newEl, oldEl) {
-    if (newEl && newEl.nodeType === 1 && (newEl.tagName === 'BILI-COMMENTS' || newEl.tagName === 'BILI-COMMENT-CONTAINER')) {
-      console.log('[评论模块] 拦截 bili-comments replaceChild');
-      return oldEl;
-    }
-    return _origReplaceChild.call(this, newEl, oldEl);
-  };
 
   /* ========== 评论模块 ========== */
   let commentOid, commentType, commentCreatorID;
@@ -575,14 +540,22 @@
 
   /* ========== 2. 阻止登录弹窗 / 自动暂停 ========== */
   GM_addStyle(`
-.bili-mini-mask,
-.bili-mini-login,
-.mini-login,
-.mini-login-mask,
-.passport-login-tip-container,
-.login-tip,
-.bili-login-v2-mask,
-.bili-login-v2-container{display:none !important;pointer-events:none !important;opacity:0 !important;visibility:hidden !important}
+.bpx-player-container .bili-mini-mask,
+.bpx-player-container .bili-mini-login,
+.bpx-player-container .mini-login,
+.bpx-player-container .mini-login-mask,
+.bpx-player-container .passport-login-tip-container,
+.bpx-player-container .login-tip,
+.bpx-player-container .bili-login-v2-mask,
+.bpx-player-container .bili-login-v2-container,
+.bpx-player-container-wrap .bili-mini-mask,
+.bpx-player-container-wrap .bili-mini-login,
+.bpx-player-container-wrap .mini-login,
+.bpx-player-container-wrap .mini-login-mask,
+.bpx-player-container-wrap .passport-login-tip-container,
+.bpx-player-container-wrap .login-tip,
+.bpx-player-container-wrap .bili-login-v2-mask,
+.bpx-player-container-wrap .bili-login-v2-container{display:none !important;pointer-events:none !important;opacity:0 !important;visibility:hidden !important}
 `);
 
   (function blockLoginAndAutoPause() {
@@ -610,6 +583,7 @@
 
       let lastUserActionTime = 0;
       let allowInternalPause = false;
+      let currentMedia = null;
       const markUserAction = () => {
         lastUserActionTime = Date.now();
       };
@@ -631,37 +605,39 @@
         return originPause.apply(this, arguments);
       };
 
-      const mediaElement = unsafeWindow.player?.mediaElement?.();
-      if (mediaElement && typeof mediaElement.pause === 'function') {
-        const originMediaPause = mediaElement.pause.bind(mediaElement);
-        mediaElement.pause = function () {
+      const bindMediaGuard = (media) => {
+        if (!media || media.dataset.bfqPauseGuardBound) return;
+        const originMediaPause = media.pause.bind(media);
+        media.pause = function () {
           if (!canPauseNow()) return;
           return originMediaPause();
         };
-        mediaElement.addEventListener('pause', () => {
+        media.addEventListener('pause', () => {
           if (!canPauseNow()) {
-            Promise.resolve().then(() => mediaElement.play()).catch(() => {});
+            Promise.resolve().then(() => media.play()).catch(() => {});
           }
         }, true);
-      }
+        media.dataset.bfqPauseGuardBound = '1';
+      };
+
+      const trackCurrentMedia = () => {
+        try {
+          const media = unsafeWindow.player?.mediaElement?.();
+          if (media && media !== currentMedia) {
+            currentMedia = media;
+            bindMediaGuard(media);
+          }
+        } catch (e) {}
+      };
+      trackCurrentMedia();
+      setInterval(trackCurrentMedia, 500);
 
       if (unsafeWindow.player && typeof unsafeWindow.player.mediaElement === 'function') {
         const originMediaElementGetter = unsafeWindow.player.mediaElement.bind(unsafeWindow.player);
         unsafeWindow.player.mediaElement = function () {
           const media = originMediaElementGetter();
-          if (media && !media.dataset.bfqPauseGuardBound) {
-            const originPauseMethod = media.pause.bind(media);
-            media.pause = function () {
-              if (!canPauseNow()) return;
-              return originPauseMethod();
-            };
-            media.addEventListener('pause', () => {
-              if (!canPauseNow()) {
-                Promise.resolve().then(() => media.play()).catch(() => {});
-              }
-            }, true);
-            media.dataset.bfqPauseGuardBound = '1';
-          }
+          bindMediaGuard(media);
+          currentMedia = media || currentMedia;
           return media;
         };
       }
@@ -690,7 +666,21 @@
   /* 3-2 把 30s/60s/90s 试用倒计时延长到 3 亿秒 */
   const originSetTimeout = unsafeWindow.setTimeout;
   unsafeWindow.setTimeout = (fn, delay) => {
-    if (delay === 30000 || delay === 60000 || delay === 90000) delay = CONFIG.TRIAL_TIMEOUT;
+    const delayNum = Number(delay);
+    if (delayNum === 30000 || delayNum === 60000 || delayNum === 62000 || delayNum === 90000) {
+      delay = CONFIG.TRIAL_TIMEOUT;
+    } else if (delayNum >= 30000 && delayNum <= 120000) {
+      const fnText = typeof fn === 'function' ? String(fn) : String(fn || '');
+      if (
+        fnText.includes('isLogin') ||
+        fnText.includes('miniLogin') ||
+        fnText.includes('试看') ||
+        fnText.includes('trial') ||
+        fnText.includes('pause')
+      ) {
+        delay = CONFIG.TRIAL_TIMEOUT;
+      }
+    }
     return originSetTimeout.call(unsafeWindow, fn, delay);
   };
 
