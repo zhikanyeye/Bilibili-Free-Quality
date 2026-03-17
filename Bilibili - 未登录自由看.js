@@ -663,25 +663,35 @@
     return originDef.call(this, obj, prop, desc);
   };
 
-  /* 3-2 把 30s/60s/90s 试用倒计时延长到 3 亿秒 */
+  /* 3-2 把试用倒计时延长到 3 亿秒 */
   const originSetTimeout = unsafeWindow.setTimeout;
+  const originSetInterval = unsafeWindow.setInterval;
+  const shouldExtendTrialTimer = (fn, delayNum) => {
+    if (delayNum === 30000) return true;
+    if (delayNum !== 60000 && delayNum !== 62000 && delayNum !== 90000) return false;
+    const fnText = typeof fn === 'function' ? String(fn) : String(fn || '');
+    return (
+      fnText.includes('miniLogin') ||
+      fnText.includes('试看') ||
+      fnText.includes('trial') ||
+      fnText.includes('isViewToday') ||
+      fnText.includes('isVideoAble') ||
+      fnText.includes('absolutePlayTime')
+    );
+  };
   unsafeWindow.setTimeout = (fn, delay) => {
     const delayNum = Number(delay);
-    if (delayNum === 30000 || delayNum === 60000 || delayNum === 62000 || delayNum === 90000) {
+    if (shouldExtendTrialTimer(fn, delayNum)) {
       delay = CONFIG.TRIAL_TIMEOUT;
-    } else if (delayNum >= 30000 && delayNum <= 120000) {
-      const fnText = typeof fn === 'function' ? String(fn) : String(fn || '');
-      if (
-        fnText.includes('isLogin') ||
-        fnText.includes('miniLogin') ||
-        fnText.includes('试看') ||
-        fnText.includes('trial') ||
-        fnText.includes('pause')
-      ) {
-        delay = CONFIG.TRIAL_TIMEOUT;
-      }
     }
     return originSetTimeout.call(unsafeWindow, fn, delay);
+  };
+  unsafeWindow.setInterval = (fn, delay) => {
+    const delayNum = Number(delay);
+    if (shouldExtendTrialTimer(fn, delayNum)) {
+      delay = CONFIG.TRIAL_TIMEOUT;
+    }
+    return originSetInterval.call(unsafeWindow, fn, delay);
   };
 
   /* 3-3 自动点击试用按钮 + 画质切换 */
