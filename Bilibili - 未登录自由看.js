@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      3.2
-// @description  未登录自动无限试用最高画质 + 阻止登录弹窗/自动暂停 + 真正可用的评论解锁（v3.2 修复1分钟自动暂停、恢复顶部搜索栏、支持连播视频评论自动切换）
+// @version      3.3
+// @description  未登录自动无限试用最高画质 + 阻止登录弹窗/自动暂停 + 真正可用的评论解锁（v3.3 修复工具栏重载后搜索框消失、增强防自动暂停）
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -93,14 +93,9 @@
   const _origInsertBefore = Node.prototype.insertBefore;
   const _origReplaceChild = Node.prototype.replaceChild;
 
-  // 重写 appendChild 以同时拦截 miniLogin 和评论组件
+  // 重写 appendChild 以拦截评论组件
   Node.prototype.appendChild = function(el) {
     if (el && el.nodeType === 1) {
-      // 拦截 miniLogin 脚本 - 返回 null 防止加载
-      if (el.tagName === 'SCRIPT' && el.src && el.src.includes('miniLogin')) {
-        console.log('[Bilibili脚本] 拦截 miniLogin 脚本加载');
-        return null;
-      }
       // 拦截官方评论组件
       if (el.tagName === 'BILI-COMMENTS' || el.tagName === 'BILI-COMMENT-CONTAINER') {
         console.log('[评论模块] 拦截 bili-comments appendChild');
@@ -579,6 +574,17 @@
   if (document.cookie.includes('DedeUserID')) return;
 
   /* ========== 2. 阻止登录弹窗 / 自动暂停 ========== */
+  GM_addStyle(`
+.bili-mini-mask,
+.bili-mini-login,
+.mini-login,
+.mini-login-mask,
+.passport-login-tip-container,
+.login-tip,
+.bili-login-v2-mask,
+.bili-login-v2-container{display:none !important;pointer-events:none !important;opacity:0 !important;visibility:hidden !important}
+`);
+
   (function blockLoginAndAutoPause() {
     /* 2-1 等待播放器就绪后屏蔽 getMediaInfo 返回值 */
     const waitPlayer = () => new Promise((resolve, reject) => {
@@ -602,24 +608,69 @@
         return { absolutePlayTime: 0, relativePlayTime: info.relativePlayTime, playUrl: info.playUrl };
       };
 
-      /* 2-2 禁止脚本自动暂停（只允许用户点击后短时间内暂停） */
-      let isClickedRecently = false;
-      document.addEventListener('click', () => {
-        isClickedRecently = true;
-        setTimeout(() => (isClickedRecently = false), CONFIG.CLICK_TIMEOUT);
-      }, { passive: true });
-      
+      let lastUserActionTime = 0;
+      let allowInternalPause = false;
+      const markUserAction = () => {
+        lastUserActionTime = Date.now();
+      };
+      const canPauseNow = () => {
+        return allowInternalPause || Date.now() - lastUserActionTime <= CONFIG.CLICK_TIMEOUT;
+      };
+
+      document.addEventListener('pointerdown', markUserAction, { passive: true, capture: true });
+      document.addEventListener('click', markUserAction, { passive: true, capture: true });
       document.addEventListener('keydown', (e) => {
-        if (e.code === 'Space' || e.key === ' ') {
-          isClickedRecently = true;
-          setTimeout(() => (isClickedRecently = false), CONFIG.CLICK_TIMEOUT);
+        if (e.code === 'Space' || e.code === 'KeyK' || e.key === ' ' || e.key === 'k' || e.key === 'K') {
+          markUserAction();
         }
-      }, { passive: true });
-      
+      }, { passive: true, capture: true });
+
       const originPause = unsafeWindow.player.pause;
       unsafeWindow.player.pause = function () {
-        if (!isClickedRecently) return;
+        if (!canPauseNow()) return;
         return originPause.apply(this, arguments);
+      };
+
+      const mediaElement = unsafeWindow.player?.mediaElement?.();
+      if (mediaElement && typeof mediaElement.pause === 'function') {
+        const originMediaPause = mediaElement.pause.bind(mediaElement);
+        mediaElement.pause = function () {
+          if (!canPauseNow()) return;
+          return originMediaPause();
+        };
+        mediaElement.addEventListener('pause', () => {
+          if (!canPauseNow()) {
+            Promise.resolve().then(() => mediaElement.play()).catch(() => {});
+          }
+        }, true);
+      }
+
+      if (unsafeWindow.player && typeof unsafeWindow.player.mediaElement === 'function') {
+        const originMediaElementGetter = unsafeWindow.player.mediaElement.bind(unsafeWindow.player);
+        unsafeWindow.player.mediaElement = function () {
+          const media = originMediaElementGetter();
+          if (media && !media.dataset.bfqPauseGuardBound) {
+            const originPauseMethod = media.pause.bind(media);
+            media.pause = function () {
+              if (!canPauseNow()) return;
+              return originPauseMethod();
+            };
+            media.addEventListener('pause', () => {
+              if (!canPauseNow()) {
+                Promise.resolve().then(() => media.play()).catch(() => {});
+              }
+            }, true);
+            media.dataset.bfqPauseGuardBound = '1';
+          }
+          return media;
+        };
+      }
+
+      unsafeWindow.__BFQ_ALLOW_INTERNAL_PAUSE__ = () => {
+        allowInternalPause = true;
+        setTimeout(() => {
+          allowInternalPause = false;
+        }, CONFIG.CLICK_TIMEOUT);
       };
     }).catch(err => {
       console.warn('[Bilibili脚本] 播放器初始化失败:', err);
@@ -663,7 +714,10 @@
         if (options.isWaitUntilHighQualityLoaded && unsafeWindow.player?.mediaElement) {
           const media = unsafeWindow.player.mediaElement();
           const wasPlaying = !media.paused;
-          if (wasPlaying) media.pause();
+          if (wasPlaying) {
+            unsafeWindow.__BFQ_ALLOW_INTERNAL_PAUSE__?.();
+            media.pause();
+          }
 
           const checkToast = setInterval(() => {
             const toastTexts = document.querySelectorAll('.bpx-player-toast-text');
