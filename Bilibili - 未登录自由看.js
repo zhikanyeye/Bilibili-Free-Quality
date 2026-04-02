@@ -548,8 +548,7 @@
     '.passport-login-tip-container',
     '.login-tip',
     '.bili-login-v2-mask',
-    '.bili-login-v2-container',
-    '.bpx-player-toast-login'
+    '.bili-login-v2-container'
   ].join(',');
 
   const isInPlayerArea = (el) => {
@@ -726,24 +725,36 @@
     return originDef.call(this, obj, prop, desc);
   };
 
-  /* 3-2 把试用倒计时延长到 3 亿秒（仅拦截高置信度回调，避免误伤导航） */
+  /* 3-2 把试用倒计时延长到 3 亿秒 */
   const originSetTimeout = unsafeWindow.setTimeout;
+  const originSetInterval = unsafeWindow.setInterval;
   const shouldExtendTrialTimer = (fn, delayNum) => {
-    if (delayNum !== 30000 && delayNum !== 60000 && delayNum !== 62000 && delayNum !== 90000) {
-      return false;
-    }
-    if (typeof fn !== 'function') return false;
-
-    const fnText = Function.prototype.toString.call(fn);
-    return /isViewToday|isVideoAble|absolutePlayTime|试看|trial/i.test(fnText);
+    if (delayNum === 30000) return true;
+    if (delayNum !== 60000 && delayNum !== 62000 && delayNum !== 90000) return false;
+    const fnText = typeof fn === 'function' ? String(fn) : String(fn || '');
+    return (
+      fnText.includes('miniLogin') ||
+      fnText.includes('试看') ||
+      fnText.includes('trial') ||
+      fnText.includes('isViewToday') ||
+      fnText.includes('isVideoAble') ||
+      fnText.includes('absolutePlayTime')
+    );
   };
 
-  unsafeWindow.setTimeout = function (fn, delay) {
+  unsafeWindow.setTimeout = (fn, delay) => {
     const delayNum = Number(delay);
     if (shouldExtendTrialTimer(fn, delayNum)) {
-      return originSetTimeout.call(this, fn, CONFIG.TRIAL_TIMEOUT);
+      delay = CONFIG.TRIAL_TIMEOUT;
     }
-    return originSetTimeout.call(this, fn, delay);
+    return originSetTimeout.call(unsafeWindow, fn, delay);
+  };
+  unsafeWindow.setInterval = (fn, delay) => {
+    const delayNum = Number(delay);
+    if (shouldExtendTrialTimer(fn, delayNum)) {
+      delay = CONFIG.TRIAL_TIMEOUT;
+    }
+    return originSetInterval.call(unsafeWindow, fn, delay);
   };
 
   /* 3-3 自动点击试用按钮 + 画质切换 */
