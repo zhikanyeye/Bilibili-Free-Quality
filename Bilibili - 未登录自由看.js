@@ -946,9 +946,9 @@ select:hover{border-color:#00aeec}
     const entry = document.createElement('div');
     entry.textContent = '🎬 脚本设置 >';
     entry.style.cssText = 'cursor:pointer;height:20px;line-height:20px;padding:4px 8px;transition:background .2s';
-    entry.onmouseenter = () => entry.style.background = 'rgba(0,174,236,0.1)';
-    entry.onmouseleave = () => entry.style.background = '';
-    entry.onclick = () => (panel.style.display = 'flex');
+    entry.onmouseenter = () => { entry.style.background = 'rgba(0,174,236,0.1)'; };
+    entry.onmouseleave = () => { entry.style.background = ''; };
+    entry.onclick = () => { panel.style.display = 'flex'; };
     others.appendChild(entry);
     entryAdded = true;
   };
