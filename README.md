@@ -1,7 +1,7 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Version](https://img.shields.io/badge/version-3.3-green)
+![Version](https://img.shields.io/badge/version-3.4-green)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 
 ## 📌 简介
@@ -70,6 +70,12 @@
 6. 自建评论渲染逻辑，支持无限滚动与分页两种模式，支持子评论展开
 
 ## 🔄 更新日志
+
+### v3.4 (2026-04-13)
+- 🛡️ **重写**：从源头拦截 `miniLogin.js` 加载（参考 DD1969 原始方案），彻底阻止登录弹窗生成
+- 🧭 **修复**：顶部工具栏/搜索栏被登录遮罩覆盖的问题（CSS 层级保护 `.bili-header` 区域）
+- 🎯 **优化**：登录遮罩分两类处理——全屏遮罩无条件隐藏，播放器内提示仅在播放器区域内隐藏
+- 📐 **架构**：三层防御体系（脚本拦截 → CSS 规则 → DOM MutationObserver）
 
 ### v3.3 (2026-04-02)
 - 🐛 **修复**：未登录播放约 1 分钟后可能被自动暂停（重写防暂停判定，保留用户主动暂停）

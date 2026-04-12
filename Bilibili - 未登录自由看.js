@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      3.3
-// @description  v3.3：未登录无限试用最高画质 + 修复约1分钟自动暂停 + 修复顶部工具栏误屏蔽 + 真正可用的评论解锁
+// @version      3.4
+// @description  v3.4：未登录无限试用最高画质 + 拦截miniLogin加载 + 保护顶部工具栏/搜索栏 + 真正可用的评论解锁
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -540,40 +540,90 @@
   if (document.cookie.includes('DedeUserID')) return;
 
   /* ========== 2. 阻止登录弹窗 / 自动暂停 ========== */
-  const LOGIN_LAYER_SELECTOR = [
+
+  /* 2-0 从源头拦截 miniLogin.js 加载（参考 DD1969 方案） */
+  const originAppendChild = Node.prototype.appendChild;
+  Node.prototype.appendChild = function (child) {
+    if (child && child.tagName === 'SCRIPT' && child.src && child.src.includes('miniLogin')) {
+      console.log('[Bilibili脚本] 已拦截 miniLogin.js 加载');
+      return child;                   // 不执行 appendChild，返回原节点即可
+    }
+    return originAppendChild.call(this, child);
+  };
+
+  /* 2-1 登录遮罩 / 弹窗选择器 */
+  // —— 全屏遮罩 / 登录弹窗：直接挂在 body 上，覆盖整个页面 ——
+  const GLOBAL_LOGIN_SELECTOR = [
     '.bili-mini-mask',
     '.bili-mini-login',
     '.mini-login',
     '.mini-login-mask',
-    '.passport-login-tip-container',
-    '.login-tip',
     '.bili-login-v2-mask',
     '.bili-login-v2-container'
   ].join(',');
 
-  const isInPlayerArea = (el) => {
-    if (!el || el.nodeType !== 1) return false;
-    return !!el.closest('.bpx-player-container, .bpx-player-video-area, .bpx-player-video-wrap, #bilibili-player');
+  // —— 播放器内部登录提示 ——
+  const PLAYER_LOGIN_SELECTOR = [
+    '.passport-login-tip-container',
+    '.login-tip'
+  ].join(',');
+
+  /* 2-2 CSS 保护顶部导航栏，确保工具栏/搜索栏始终可见可交互 */
+  GM_addStyle(`
+    /* 顶部导航区域始终保持最高层级 */
+    .bili-header,
+    #bili-header-container,
+    .bili-header__bar,
+    #biliMainHeader,
+    .fixed-header {
+      position: relative !important;
+      z-index: 100001 !important;
+      pointer-events: auto !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+    }
+    /* 全局登录遮罩直接干掉 */
+    body > .bili-mini-mask,
+    body > .bili-mini-login,
+    body > .mini-login,
+    body > .mini-login-mask,
+    body > .bili-login-v2-mask,
+    body > .bili-login-v2-container {
+      display: none !important;
+      pointer-events: none !important;
+      opacity: 0 !important;
+      visibility: hidden !important;
+    }
+  `);
+
+  /* 2-3 DOM 级别隐藏：处理动态插入的登录弹窗 */
+  const hideElement = (el) => {
+    if (!el || el.nodeType !== 1) return;
+    el.style.setProperty('display', 'none', 'important');
+    el.style.setProperty('pointer-events', 'none', 'important');
+    el.style.setProperty('opacity', '0', 'important');
+    el.style.setProperty('visibility', 'hidden', 'important');
   };
 
   const hideLoginLayersInNode = (node) => {
     if (!node || node.nodeType !== 1) return;
-    const targets = [];
-    if (node.matches?.(LOGIN_LAYER_SELECTOR)) {
-      targets.push(node);
-    }
-    node.querySelectorAll?.(LOGIN_LAYER_SELECTOR).forEach((el) => targets.push(el));
 
-    targets.forEach((el) => {
-      if (!isInPlayerArea(el)) return;
-      el.style.setProperty('display', 'none', 'important');
-      el.style.setProperty('pointer-events', 'none', 'important');
-      el.style.setProperty('opacity', '0', 'important');
-      el.style.setProperty('visibility', 'hidden', 'important');
+    // 全局级登录遮罩 / 弹窗 —— 无论在哪都隐藏
+    if (node.matches?.(GLOBAL_LOGIN_SELECTOR)) hideElement(node);
+    node.querySelectorAll?.(GLOBAL_LOGIN_SELECTOR)?.forEach(hideElement);
+
+    // 播放器内部登录提示 —— 仅隐藏播放器区域内的
+    const isInPlayer = (el) => !!el.closest(
+      '.bpx-player-container, .bpx-player-video-area, .bpx-player-video-wrap, #bilibili-player'
+    );
+    if (node.matches?.(PLAYER_LOGIN_SELECTOR) && isInPlayer(node)) hideElement(node);
+    node.querySelectorAll?.(PLAYER_LOGIN_SELECTOR)?.forEach((el) => {
+      if (isInPlayer(el)) hideElement(el);
     });
   };
 
-  hideLoginLayersInNode(document.documentElement);
+  // 初始扫描
+  if (document.documentElement) hideLoginLayersInNode(document.documentElement);
 
   const startLoginLayerGuard = () => {
     const observer = new MutationObserver((mutations) => {
@@ -581,7 +631,6 @@
         mutation.addedNodes.forEach((node) => hideLoginLayersInNode(node));
       }
     });
-
     observer.observe(document.body, { childList: true, subtree: true });
   };
 
