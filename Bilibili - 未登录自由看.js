@@ -1,13 +1,18 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      3.4
-// @description  v3.4：未登录无限试用最高画质 + 拦截miniLogin加载 + 保护顶部工具栏/搜索栏 + 真正可用的评论解锁
+// @version      3.5
+// @description  v3.5：新增动态/专栏评论解锁 + 直播分区未登录连续加载 + 评论页码跳转 + 修复自动播放设置被覆盖
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
 // @match        https://www.bilibili.com/list/*
 // @match        https://www.bilibili.com/festival/*
+// @match        https://www.bilibili.com/opus/*
+// @match        https://www.bilibili.com/read/cv*
+// @match        https://t.bilibili.com/*
+// @match        https://space.bilibili.com/*
+// @match        https://live.bilibili.com/*
 // @icon         https://www.bilibili.com/favicon.ico
 // @require      https://cdnjs.cloudflare.com/ajax/libs/spark-md5/3.0.2/spark-md5.min.js
 // @require      https://update.greasyfork.org/scripts/512574/1464548/inject-bilibili-comment-style.js
@@ -38,7 +43,19 @@
     preferQuality: GM_getValue('preferQuality', '1080'),
     isWaitUntilHighQualityLoaded: GM_getValue('isWaitUntilHighQualityLoaded', false),
     enableCommentUnlock: GM_getValue('enableCommentUnlock', true),
-    enableReplyPagination: GM_getValue('enableReplyPagination', false)
+    enableReplyPagination: GM_getValue('enableReplyPagination', false),
+    enableLiveAreaUnlock: GM_getValue('enableLiveAreaUnlock', true)
+  };
+
+  const PAGE_RE = {
+    video: /^https:\/\/www\.bilibili\.com\/video\//,
+    dynamic: /^https:\/\/t\.bilibili\.com\/\d+/,
+    opus: /^https:\/\/www\.bilibili\.com\/opus\/\d+/,
+    space: /^https:\/\/space\.bilibili\.com\/\d+/,
+    article: /^https:\/\/www\.bilibili\.com\/read\/cv\d+/,
+    festival: /^https:\/\/www\.bilibili\.com\/festival\//,
+    list: /^https:\/\/www\.bilibili\.com\/list\//,
+    live: /^https:\/\/live\.bilibili\.com\//
   };
 
   /* ========== 工具函数 ========== */
@@ -95,7 +112,9 @@
   let commentNextOffset = '';
   let commentPageOffsets = [''];
   let commentCurrentPage = 0;
+  let commentTotalCount = 0;
   const COMMENT_SORT = { LATEST: 0, HOT: 2 };
+  const COMMENT_PAGE_SIZE = 20;
 
   async function getWbiQueryString(params) {
     const { img_url, sub_url } = await fetch('https://api.bilibili.com/x/web-interface/nav')
@@ -126,6 +145,321 @@
       r = r * BASE + BigInt(ALPHABET.indexOf(bvid[DIGIT_MAP[i]]));
     }
     return `${r & MASK_CODE ^ XOR_CODE}`;
+  }
+
+  function isVideoCommentPage() {
+    return PAGE_RE.video.test(location.href) || PAGE_RE.list.test(location.href) || PAGE_RE.festival.test(location.href);
+  }
+
+  function isCommentDetailPage() {
+    return isVideoCommentPage() || PAGE_RE.dynamic.test(location.href) || PAGE_RE.opus.test(location.href) || PAGE_RE.article.test(location.href);
+  }
+
+  function getDynamicIdFromLocation() {
+    const match = location.pathname.match(/(?:\/opus\/|^\/)(\d+)/);
+    return match ? match[1] : '';
+  }
+
+  function getArticleIdFromLocation() {
+    const match = location.pathname.match(/\/read\/cv(\d+)/i);
+    return match ? match[1] : '';
+  }
+
+  async function getDynamicCommentTarget(dynamicId) {
+    if (!dynamicId) return null;
+    const res = await fetch(`https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=${dynamicId}`, {
+      credentials: 'include'
+    });
+    const json = await res.json();
+    const item = json.data?.item;
+    const basic = item?.basic || {};
+    const oid = basic.comment_id_str || basic.comment_id || item?.id_str || dynamicId;
+    const type = Number(basic.comment_type || basic.comment_type_str || 17);
+    const creator = item?.modules?.module_author?.mid || item?.modules?.module_author?.uid || 0;
+    return oid ? { oid: String(oid), type, creator } : null;
+  }
+
+  function getVideoCommentTarget() {
+    const state = unsafeWindow.__INITIAL_STATE__;
+    let oid = String(state?.aid || state?.videoData?.aid || '');
+    if (!oid || oid === 'undefined') {
+      const bvMatch = location.pathname.match(/BV[\w]+/i);
+      if (bvMatch) oid = b2a(bvMatch[0]);
+    }
+    return oid ? {
+      oid,
+      type: 1,
+      creator: state?.upData?.mid || state?.videoData?.owner?.mid || 0
+    } : null;
+  }
+
+  function getArticleCommentTarget() {
+    const state = unsafeWindow.__INITIAL_STATE__ || {};
+    const oid = String(
+      state?.readInfo?.id ||
+      state?.readInfo?.cvid ||
+      state?.readInfo?.cid ||
+      state?.detail?.id ||
+      state?.articleInfo?.id ||
+      getArticleIdFromLocation()
+    );
+    const creator = state?.readInfo?.mid || state?.readInfo?.author?.mid || state?.articleInfo?.author?.mid || 0;
+    return oid && oid !== 'undefined' ? { oid, type: 12, creator } : null;
+  }
+
+  async function resolveCommentTarget() {
+    try {
+      if (isVideoCommentPage()) return getVideoCommentTarget();
+      if (PAGE_RE.article.test(location.href)) return getArticleCommentTarget();
+      if (PAGE_RE.dynamic.test(location.href) || PAGE_RE.opus.test(location.href)) {
+        return await getDynamicCommentTarget(getDynamicIdFromLocation());
+      }
+    } catch(e) {
+      console.error('[评论模块] 获取评论目标失败:', e);
+    }
+    return null;
+  }
+
+  function setupDynamicCommentBtnModifier() {
+    if (!PAGE_RE.live.test(location.href) && !PAGE_RE.space.test(location.href)) return;
+
+    const getDynamicLink = (node) => {
+      const root = node.closest?.('[data-did], [data-dynamic-id], .opus-card, .bili-dyn-item, .dynamic-card, .card');
+      const linkEl = root?.querySelector?.('a[href*="/opus/"], a[href*="t.bilibili.com/"]') ||
+        node.closest?.('a[href*="/opus/"], a[href*="t.bilibili.com/"]');
+      if (linkEl?.href) return linkEl.href;
+      const did = root?.dataset?.did || root?.dataset?.dynamicId;
+      return did ? `https://www.bilibili.com/opus/${did}` : '';
+    };
+
+    const bind = () => {
+      document.querySelectorAll('[class*="comment"], [aria-label*="评论"], [title*="评论"]').forEach((btn) => {
+        if (btn.dataset.bfqCommentBound) return;
+        const text = (btn.textContent || btn.getAttribute('aria-label') || btn.getAttribute('title') || '').trim();
+        if (!/评论/.test(text)) return;
+        const href = getDynamicLink(btn);
+        if (!href) return;
+        btn.dataset.bfqCommentBound = '1';
+        btn.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          location.href = href;
+        }, true);
+      });
+    };
+
+    const start = () => {
+      bind();
+      new MutationObserver(bind).observe(document.body, { childList: true, subtree: true });
+    };
+
+    if (document.body) start();
+    else document.addEventListener('DOMContentLoaded', start, { once: true });
+  }
+
+  function getLiveAreaFallbackUrl(rawUrl) {
+    try {
+      const url = new URL(rawUrl, location.href);
+      if (url.hostname !== 'api.live.bilibili.com') return null;
+      if (url.pathname !== '/xlive/web-interface/v1/second/getList') return null;
+
+      const params = url.searchParams;
+      const fallback = new URL('https://api.live.bilibili.com/room/v3/area/getRoomList');
+      fallback.searchParams.set('platform', 'web');
+      fallback.searchParams.set('parent_area_id', params.get('parent_area_id') || '0');
+      fallback.searchParams.set('area_id', params.get('area_id') || '0');
+      fallback.searchParams.set('page', params.get('page') || '1');
+      fallback.searchParams.set('page_size', params.get('page_size') || '30');
+      fallback.searchParams.set('sort_type', params.get('sort_type') || '');
+      return {
+        url: fallback.toString(),
+        page: Number(params.get('page') || '1'),
+        pageSize: Number(params.get('page_size') || '30'),
+        parentAreaId: Number(params.get('parent_area_id') || '0'),
+        areaId: Number(params.get('area_id') || '0')
+      };
+    } catch(e) {
+      return null;
+    }
+  }
+
+  function mapLiveAreaRoomList(json, requestInfo) {
+    if (!json || json.code !== 0) return json;
+    const oldData = json.data || {};
+    const list = (oldData.list || []).map((item) => {
+      const roomid = item.roomid || item.room_id;
+      return {
+        ...item,
+        roomid,
+        uid: item.uid || item.anchor_id || 0,
+        title: item.title || '',
+        uname: item.uname || item.user_name || '',
+        cover: item.cover || item.user_cover || item.system_cover || '',
+        user_cover: item.user_cover || item.cover || item.system_cover || '',
+        system_cover: item.system_cover || item.keyframe || item.cover || '',
+        face: item.face || item.avatar || '',
+        link: item.link || `/${roomid}`,
+        parent_id: item.parent_id || requestInfo.parentAreaId,
+        area_id: item.area_id || requestInfo.areaId,
+        area_v2_id: item.area_v2_id || item.area_id || requestInfo.areaId,
+        area_v2_parent_id: item.area_v2_parent_id || item.parent_id || requestInfo.parentAreaId,
+        area_v2_name: item.area_v2_name || item.area_name || '',
+        area_v2_parent_name: item.area_v2_parent_name || item.parent_area_name || '',
+        show_cover: item.show_cover || 'roomCover',
+        is_auto_play: item.is_auto_play || 0,
+        pendant_info: item.pendant_info || {},
+        watched_show: item.watched_show || {}
+      };
+    });
+    const count = Number(oldData.count || 0);
+    const pageSize = Math.max(requestInfo.pageSize || 30, list.length || 0, 1);
+    const hasMore = count ? (requestInfo.page * pageSize < count ? 1 : 0) : (list.length >= pageSize ? 1 : 0);
+    return {
+      code: 0,
+      msg: json.msg || 'success',
+      message: json.message || json.msg || 'success',
+      ttl: json.ttl ?? 1,
+      data: {
+        list,
+        banner: oldData.banner || [],
+        new_tags: oldData.new_tags || [],
+        has_more: hasMore,
+        vajra: oldData.vajra || [],
+        cover_source: oldData.cover_source || 0
+      }
+    };
+  }
+
+  function installLiveAreaUnlock() {
+    if (!options.enableLiveAreaUnlock || !PAGE_RE.live.test(location.href)) return;
+
+    const NativeResponse = unsafeWindow.Response || Response;
+    const originFetch = unsafeWindow.fetch?.bind(unsafeWindow);
+    if (originFetch) {
+      unsafeWindow.fetch = async function(input, init) {
+        const rawUrl = typeof input === 'string' ? input : input?.url;
+        const fallback = getLiveAreaFallbackUrl(rawUrl);
+        if (!fallback) return originFetch(input, init);
+
+        const res = await originFetch(fallback.url, { ...init, credentials: 'omit' });
+        const mapped = mapLiveAreaRoomList(await res.json(), fallback);
+        return new NativeResponse(JSON.stringify(mapped), {
+          status: 200,
+          statusText: 'OK',
+          headers: { 'Content-Type': 'application/json; charset=utf-8' }
+        });
+      };
+    }
+
+    const XHR = unsafeWindow.XMLHttpRequest;
+    if (!XHR || XHR.prototype.__bfqLiveAreaPatched) return;
+    XHR.prototype.__bfqLiveAreaPatched = true;
+
+    const fakeStates = new WeakMap();
+    const originOpen = XHR.prototype.open;
+    const originSend = XHR.prototype.send;
+    const originSetRequestHeader = XHR.prototype.setRequestHeader;
+    const originGetResponseHeader = XHR.prototype.getResponseHeader;
+    const originGetAllResponseHeaders = XHR.prototype.getAllResponseHeaders;
+
+    const nativeGetters = {};
+    ['readyState', 'status', 'statusText', 'response', 'responseText', 'responseURL'].forEach((prop) => {
+      nativeGetters[prop] = Object.getOwnPropertyDescriptor(XHR.prototype, prop)?.get;
+    });
+
+    const emit = (xhr, type) => {
+      const event = new unsafeWindow.Event(type);
+      xhr.dispatchEvent(event);
+      const handler = xhr[`on${type}`];
+      if (typeof handler === 'function') handler.call(xhr, event);
+    };
+
+    const setReadyState = (xhr, state, readyState) => {
+      state.readyState = readyState;
+      emit(xhr, 'readystatechange');
+    };
+
+    XHR.prototype.open = function(method, url, async = true) {
+      const fallback = getLiveAreaFallbackUrl(url);
+      if (!fallback) return originOpen.apply(this, arguments);
+
+      fakeStates.set(this, {
+        matched: true,
+        method,
+        url: String(url),
+        fallback,
+        async: async !== false,
+        headers: {},
+        readyState: 1,
+        status: 0,
+        statusText: '',
+        response: null,
+        responseText: '',
+        responseURL: fallback.url,
+        responseHeaders: 'content-type: application/json; charset=utf-8\r\n'
+      });
+      setTimeout(() => emit(this, 'readystatechange'), 0);
+    };
+
+    XHR.prototype.setRequestHeader = function(name, value) {
+      const state = fakeStates.get(this);
+      if (state?.matched) {
+        state.headers[name] = value;
+        return;
+      }
+      return originSetRequestHeader.apply(this, arguments);
+    };
+
+    XHR.prototype.send = function(body) {
+      const state = fakeStates.get(this);
+      if (!state?.matched) return originSend.apply(this, arguments);
+
+      emit(this, 'loadstart');
+      setReadyState(this, state, 2);
+
+      originFetch(state.fallback.url, { method: 'GET', credentials: 'omit' })
+        .then(async (res) => {
+          const mapped = mapLiveAreaRoomList(await res.json(), state.fallback);
+          state.status = 200;
+          state.statusText = 'OK';
+          state.responseText = JSON.stringify(mapped);
+          state.response = this.responseType === 'json' ? mapped : state.responseText;
+          setReadyState(this, state, 4);
+          emit(this, 'load');
+          emit(this, 'loadend');
+        })
+        .catch((err) => {
+          state.status = 0;
+          state.statusText = String(err);
+          setReadyState(this, state, 4);
+          emit(this, 'error');
+          emit(this, 'loadend');
+        });
+    };
+
+    XHR.prototype.getResponseHeader = function(name) {
+      const state = fakeStates.get(this);
+      if (state?.matched) return String(name).toLowerCase() === 'content-type' ? 'application/json; charset=utf-8' : null;
+      return originGetResponseHeader.apply(this, arguments);
+    };
+
+    XHR.prototype.getAllResponseHeaders = function() {
+      const state = fakeStates.get(this);
+      if (state?.matched) return state.responseHeaders;
+      return originGetAllResponseHeaders.apply(this, arguments);
+    };
+
+    ['readyState', 'status', 'statusText', 'response', 'responseText', 'responseURL'].forEach((prop) => {
+      if (!nativeGetters[prop]) return;
+      Object.defineProperty(XHR.prototype, prop, {
+        configurable: true,
+        get() {
+          const state = fakeStates.get(this);
+          if (state?.matched) return state[prop];
+          return nativeGetters[prop].call(this);
+        }
+      });
+    });
   }
 
   function commentFormatTime(ts) {
@@ -265,7 +599,7 @@
     const mode = commentCurrentSortType === COMMENT_SORT.HOT ? 3 : 2;
     const paginationStr = JSON.stringify({ offset: offset || '' });
     const wts = Math.floor(Date.now() / 1000);
-    const qs = await getWbiQueryString({ oid: commentOid, type: commentType, mode, pagination_str: paginationStr, wts });
+    const qs = await getWbiQueryString({ oid: commentOid, type: commentType, mode, ps: COMMENT_PAGE_SIZE, pagination_str: paginationStr, wts });
     const res = await fetch(`https://api.bilibili.com/x/v2/reply/wbi/main?${qs}`);
     return res.json();
   }
@@ -288,6 +622,7 @@
         if (topReply) appendCommentItem(topReply, true);
       }
       (data.data?.replies || []).forEach(r => appendCommentItem(r, false));
+      commentTotalCount = Number(data.data?.cursor?.all_count || data.data?.cursor?.total || commentTotalCount || 0);
       const nextOffset = data.data?.cursor?.pagination_reply?.next_offset || '';
       const isEnd = !nextOffset || !!data.data?.cursor?.is_end;
       commentIsEnd = isEnd;
@@ -313,13 +648,65 @@
     const pageInfo = document.getElementById('bili-page-info');
     const prevBtn = document.getElementById('bili-prev-page');
     const nextBtn = document.getElementById('bili-next-page');
-    if (pageInfo) pageInfo.textContent = `第 ${commentCurrentPage + 1} 页`;
+    const jumpInput = document.getElementById('bili-jump-page-input');
+    const totalPages = commentTotalCount ? Math.max(1, Math.ceil(commentTotalCount / COMMENT_PAGE_SIZE)) : 0;
+    if (pageInfo) pageInfo.textContent = totalPages ? `第 ${commentCurrentPage + 1} / ${totalPages} 页` : `第 ${commentCurrentPage + 1} 页`;
     if (prevBtn) prevBtn.disabled = commentCurrentPage === 0;
     if (nextBtn) nextBtn.disabled = commentIsEnd;
+    if (jumpInput) {
+      jumpInput.max = totalPages || '';
+      jumpInput.placeholder = totalPages ? `1-${totalPages}` : '页码';
+    }
+  }
+
+  async function ensureCommentPageOffset(targetPage) {
+    if (targetPage < 0) return false;
+    if (commentPageOffsets[targetPage] !== undefined) return true;
+
+    let knownIndex = commentPageOffsets.length - 1;
+    while (knownIndex >= 0 && commentPageOffsets[knownIndex] === undefined) knownIndex--;
+    if (knownIndex < 0) return false;
+
+    while (knownIndex < targetPage) {
+      const data = await getCommentPaginationData(commentPageOffsets[knownIndex] || '');
+      if (data.code !== 0) return false;
+      const nextOffset = data.data?.cursor?.pagination_reply?.next_offset || '';
+      if (!nextOffset) return false;
+      commentPageOffsets[knownIndex + 1] = nextOffset;
+      knownIndex++;
+    }
+    return true;
+  }
+
+  async function jumpToCommentPage(pageNum) {
+    if (commentIsLoading) return;
+    const totalPages = commentTotalCount ? Math.max(1, Math.ceil(commentTotalCount / COMMENT_PAGE_SIZE)) : 0;
+    if (!Number.isFinite(pageNum) || pageNum < 1) return;
+    if (totalPages && pageNum > totalPages) pageNum = totalPages;
+
+    const targetIndex = pageNum - 1;
+    const loader = document.getElementById('bili-comment-loader');
+    commentIsLoading = true;
+    if (loader) {
+      loader.textContent = `正在定位第 ${pageNum} 页...`;
+      loader.style.display = 'block';
+    }
+    const ok = await ensureCommentPageOffset(targetIndex);
+    commentIsLoading = false;
+    if (loader) {
+      loader.textContent = '加载中...';
+      loader.style.display = 'none';
+    }
+    if (!ok) return;
+
+    commentCurrentPage = targetIndex;
+    commentIsEnd = false;
+    await loadCommentPage(commentPageOffsets[targetIndex] || '', false);
   }
 
   async function initCommentModule() {
     if (!options.enableCommentUnlock) return;
+    if (!isCommentDetailPage()) return;
 
     commentCurrentSortType = COMMENT_SORT.HOT;
     commentIsLoading = false;
@@ -327,6 +714,7 @@
     commentNextOffset = '';
     commentPageOffsets = [''];
     commentCurrentPage = 0;
+    commentTotalCount = 0;
 
     GM_addStyle(`
 #bili-custom-comments{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB",sans-serif;font-size:14px;color:#222;padding:16px 0}
@@ -372,34 +760,32 @@
 #bili-comment-pagination button:hover:not(:disabled){border-color:#00aeec;color:#00aeec}
 #bili-comment-pagination button:disabled{opacity:.5;cursor:not-allowed}
 #bili-page-info{color:#555;font-size:14px}
+.bili-page-jump{display:flex;align-items:center;gap:6px;color:#555;font-size:14px}
+#bili-jump-page-input{width:72px;height:30px;padding:0 8px;border:1px solid #ddd;border-radius:4px;outline:none}
+#bili-jump-page-input:focus{border-color:#00aeec}
 `);
 
+    const nativeCommentSelector = 'bili-comments, .comment-container, #commentapp, #comment, .bili-comment-container';
     let commentSection;
+    let hasNativeCommentSection = true;
     try {
-      commentSection = await waitForElement('bili-comments, .comment-container, #commentapp', 20000);
+      commentSection = await waitForElement(nativeCommentSelector, 12000);
     } catch(e) {
-      console.warn('[评论模块] 未找到评论容器:', e.message);
+      console.warn('[评论模块] 未找到官方评论容器，改用页面底部挂载:', e.message);
+      hasNativeCommentSection = false;
+      commentSection = document.querySelector('main, #app, .article-container, .opus-detail, .opus-detail-content') || document.body;
+      if (!commentSection) return;
+    }
+
+    const target = await resolveCommentTarget();
+    if (!target?.oid) {
+      console.warn('[评论模块] 无法获取评论目标');
       return;
     }
 
-    try {
-      const state = unsafeWindow.__INITIAL_STATE__;
-      commentOid = String(state?.aid || state?.videoData?.aid || '');
-      if (!commentOid || commentOid === 'undefined') {
-        const bvMatch = location.pathname.match(/BV[\w]+/i);
-        if (bvMatch) commentOid = b2a(bvMatch[0]);
-      }
-      commentType = 1;
-      commentCreatorID = state?.upData?.mid || state?.videoData?.owner?.mid || 0;
-    } catch(e) {
-      console.error('[评论模块] 获取视频信息失败:', e);
-      return;
-    }
-
-    if (!commentOid) {
-      console.warn('[评论模块] 无法获取视频AID');
-      return;
-    }
+    commentOid = target.oid;
+    commentType = target.type;
+    commentCreatorID = target.creator || 0;
 
     console.log(`[评论模块] 初始化，oid=${commentOid}, type=${commentType}, creator=${commentCreatorID}`);
 
@@ -417,11 +803,25 @@
       <div id="bili-comment-loader" style="display:none">加载中...</div>
       <div id="bili-comment-end" style="display:none">没有更多评论了</div>
       ${options.enableReplyPagination
-        ? `<div id="bili-comment-pagination"><button id="bili-prev-page" disabled>上一页</button><span id="bili-page-info">第 1 页</span><button id="bili-next-page">下一页</button></div>`
+        ? `<div id="bili-comment-pagination"><button id="bili-prev-page" disabled>上一页</button><span id="bili-page-info">第 1 页</span><button id="bili-next-page">下一页</button><label class="bili-page-jump">跳至 <input id="bili-jump-page-input" type="number" min="1" inputmode="numeric" /><button id="bili-jump-page">跳转</button></label></div>`
         : `<div id="bili-scroll-anchor"></div>`}`;
 
-    commentSection.parentNode.insertBefore(customEl, commentSection.nextSibling);
-    commentSection.style.display = 'none';
+    const mountCustomComments = () => {
+      const nativeSection = document.querySelector(nativeCommentSelector);
+      if (nativeSection?.parentNode) {
+        nativeSection.parentNode.insertBefore(customEl, nativeSection.nextSibling);
+        nativeSection.style.display = 'none';
+        return;
+      }
+      if (hasNativeCommentSection && commentSection?.parentNode) {
+        commentSection.parentNode.insertBefore(customEl, commentSection.nextSibling);
+        commentSection.style.display = 'none';
+        return;
+      }
+      (commentSection || document.body).appendChild(customEl);
+    };
+
+    mountCustomComments();
 
     // 守护自定义评论容器，防止被官方组件重新挂载时覆盖
     const commentGuard = new MutationObserver((mutations) => {
@@ -429,12 +829,7 @@
         // 如果自定义容器被移出 DOM，重新插入
         if (!document.getElementById('bili-custom-comments')) {
           console.log('[评论模块] 检测到自定义评论容器被移除，重新插入...');
-          const commentSectionNow = document.querySelector('bili-comments, .comment-container, #commentapp');
-          if (commentSectionNow && commentSectionNow.parentNode) {
-            // 使用 insertBefore 而不是 appendChild，保持原有位置关系
-            commentSectionNow.parentNode.insertBefore(customEl, commentSectionNow.nextSibling);
-            commentSectionNow.style.display = 'none';
-          }
+          mountCustomComments();
         }
         // 如果有新的 bili-comments 被插入，立刻隐藏它
         for (const node of mutation.addedNodes) {
@@ -457,6 +852,7 @@
         commentNextOffset = '';
         commentPageOffsets = [''];
         commentCurrentPage = 0;
+        commentTotalCount = 0;
         commentIsEnd = false;
         document.getElementById('bili-comment-end').style.display = 'none';
         await loadCommentPage('', false);
@@ -474,6 +870,13 @@
         commentCurrentPage--;
         commentIsEnd = false;
         await loadCommentPage(commentPageOffsets[commentCurrentPage] || '', false);
+      });
+      const jumpInput = document.getElementById('bili-jump-page-input');
+      document.getElementById('bili-jump-page').addEventListener('click', async () => {
+        await jumpToCommentPage(Number(jumpInput.value));
+      });
+      jumpInput.addEventListener('keydown', async (event) => {
+        if (event.key === 'Enter') await jumpToCommentPage(Number(jumpInput.value));
       });
       await loadCommentPage('', false);
     } else {
@@ -515,6 +918,7 @@
         commentNextOffset = '';
         commentPageOffsets = [''];
         commentCurrentPage = 0;
+        commentTotalCount = 0;
         commentIsEnd = false;
         
         // 清空评论列表
@@ -528,6 +932,9 @@
       }
     }, 1500);
   }
+
+  installLiveAreaUnlock();
+  setupDynamicCommentBtnModifier();
 
   /* ========== 初始化评论模块（无论是否登录都执行） ========== */
   if (document.readyState === 'loading') {
@@ -668,6 +1075,7 @@
       let allowInternalPause = false;
       let currentMedia = null;
       let isUserPaused = false;
+      let hasPlaybackStarted = false;
 
       const markTrustedAction = (event) => {
         if (event && event.isTrusted === false) return;
@@ -689,6 +1097,7 @@
       const originPause = typeof player.pause === 'function' ? player.pause.bind(player) : null;
       if (originPause) {
         player.pause = function () {
+          if (currentMedia && !hasPlaybackStarted) return originPause(...arguments);
           if (!canPauseNow()) return;
           return originPause(...arguments);
         };
@@ -699,11 +1108,13 @@
         const originMediaPause = media.pause.bind(media);
 
         media.pause = function () {
+          if (!hasPlaybackStarted) return originMediaPause();
           if (!canPauseNow()) return;
           return originMediaPause();
         };
 
         media.addEventListener('pause', () => {
+          if (!hasPlaybackStarted) return;
           if (allowInternalPause) return;
 
           if (Date.now() - lastTrustedActionTime <= CONFIG.CLICK_TIMEOUT) {
@@ -716,6 +1127,7 @@
         }, true);
 
         media.addEventListener('play', () => {
+          hasPlaybackStarted = true;
           isUserPaused = false;
         }, true);
 
@@ -727,6 +1139,8 @@
           const media = unsafeWindow.player?.mediaElement?.();
           if (media && media !== currentMedia) {
             currentMedia = media;
+            hasPlaybackStarted = !media.paused && !media.ended;
+            isUserPaused = false;
             bindMediaGuard(media);
           }
         } catch (e) {}
@@ -740,14 +1154,20 @@
         player.mediaElement = function () {
           const media = originMediaElementGetter();
           bindMediaGuard(media);
-          currentMedia = media || currentMedia;
+          if (media && media !== currentMedia) {
+            currentMedia = media;
+            hasPlaybackStarted = !media.paused && !media.ended;
+            isUserPaused = false;
+          } else {
+            currentMedia = media || currentMedia;
+          }
           return media;
         };
       }
 
       setInterval(() => {
         const media = currentMedia;
-        if (!media || media.ended || document.hidden || allowInternalPause || isUserPaused) return;
+        if (!media || !hasPlaybackStarted || media.ended || document.hidden || allowInternalPause || isUserPaused) return;
         if (media.paused) {
           media.play().catch(() => {});
         }
@@ -919,6 +1339,12 @@ select:hover{border-color:#00aeec}
         <span class="qp-label">分页加载评论</span>
         <span class="switch" data-key="enableReplyPagination" data-status="${options.enableReplyPagination ? 'on' : 'off'}"></span>
       </div>
+      <div class="qp-section-divider"></div>
+      <div class="qp-title">📺 直播设置</div>
+      <div class="qp-row">
+        <span class="qp-label">直播分区连续加载</span>
+        <span class="switch" data-key="enableLiveAreaUnlock" data-status="${options.enableLiveAreaUnlock ? 'on' : 'off'}"></span>
+      </div>
       <button class="qp-close-btn" onclick="this.parentElement.parentElement.style.display='none'">✓ 保存并关闭</button>
     </div>`;
   
@@ -993,6 +1419,8 @@ select:hover{border-color:#00aeec}
           options.enableCommentUnlock = isOn;
         } else if (key === 'enableReplyPagination') {
           options.enableReplyPagination = isOn;
+        } else if (key === 'enableLiveAreaUnlock') {
+          options.enableLiveAreaUnlock = isOn;
         }
         
         GM_setValue(key, isOn);
