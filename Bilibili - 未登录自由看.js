@@ -1198,8 +1198,7 @@
   const originSetTimeout = unsafeWindow.setTimeout;
   const originSetInterval = unsafeWindow.setInterval;
   const shouldExtendTrialTimer = (fn, delayNum) => {
-    if (delayNum === 30000) return true;
-    if (delayNum !== 60000 && delayNum !== 62000 && delayNum !== 90000) return false;
+    if (delayNum !== 30000 && delayNum !== 60000 && delayNum !== 62000 && delayNum !== 90000) return false;
     const fnText = typeof fn === 'function' ? String(fn) : String(fn || '');
     return (
       fnText.includes('miniLogin') ||
@@ -1268,7 +1267,11 @@
         setTimeout(() => {
           try {
             if (unsafeWindow.player?.getSupportedQualityList?.()?.includes(target)) {
-              unsafeWindow.player.requestQuality(target);
+              Promise.resolve(unsafeWindow.player.requestQuality(target)).catch((err) => {
+                if (!String(err?.message || err).includes('Same as current quality')) {
+                  console.warn('[Bilibili脚本] 画质切换失败:', err);
+                }
+              });
             }
           } catch (err) {
             console.warn('[Bilibili脚本] 画质切换失败:', err);
