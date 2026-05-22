@@ -31,7 +31,7 @@
 
 ## 🖼️ 功能演示
 
-![功能演示](https://img.lansq.xyz/file/3OD0iMtk.png)
+![功能演示](https://img.flexxi.me/file/3OD0iMtk.png)
 
 ## ⚙️ 安装与使用
 
