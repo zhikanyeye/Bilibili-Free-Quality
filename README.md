@@ -164,5 +164,6 @@
 本项目基于 [GPL-3.0 许可证](https://www.gnu.org/licenses/gpl-3.0.html) 开源。
 
 ---
+**一个公益gpt站点，免费使用gpt5.5、5.4，甚至Claude4.7，邀请链接：点击跳转(https://vsllm.com/i/SKko)**
 
 **Enjoy free 1080P without login!** 🎬✨
