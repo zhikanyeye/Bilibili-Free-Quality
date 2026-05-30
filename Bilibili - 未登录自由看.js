@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      3.5.3
-// @description  v3.5.3：修复试用高清画质时视频页顶部工具栏空白的问题
+// @version      3.5.4
+// @description  v3.5.4：修复试用高清画质时视频页顶部工具栏加载异常的问题
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -1294,7 +1294,6 @@
     if (delayNum !== 30000 && delayNum !== 60000 && delayNum !== 62000 && delayNum !== 90000) return false;
     const fnText = typeof fn === 'function' ? String(fn) : String(fn || '');
     return (
-      fnText.includes('miniLogin') ||
       fnText.includes('试看') ||
       fnText.includes('trial') ||
       fnText.includes('isViewToday') ||

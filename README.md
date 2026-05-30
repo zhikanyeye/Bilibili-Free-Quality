@@ -1,7 +1,7 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Version](https://img.shields.io/badge/version-3.5.3-green)
+![Version](https://img.shields.io/badge/version-3.5.4-green)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 
 ## 📌 简介
@@ -83,6 +83,9 @@
 8. 直播分区接口异常时，将 `/xlive/web-interface/v1/second/getList` 兜底到 `/room/v3/area/getRoomList` 并转换数据结构
 
 ## 🔄 更新日志
+
+### v3.5.4 (2026-05-31)
+- 🐛 **修复**：不再延长 `miniLogin` 相关定时器，避免顶部工具栏/搜索框初始化链路被误延迟导致加载异常或只剩空白占位
 
 ### v3.5.3 (2026-05-31)
 - 🐛 **修复**：恢复 `miniLogin.js` 正常加载，避免试用高清画质后视频页顶部工具栏、搜索框区域只剩空白占位
