@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      3.5
-// @description  v3.5：新增动态/专栏评论解锁 + 直播分区未登录连续加载 + 评论页码跳转 + 修复自动播放设置被覆盖
+// @version      3.5.3
+// @description  v3.5.3：修复试用高清画质时视频页顶部工具栏空白的问题
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -88,6 +88,10 @@
   // 延迟函数
   function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function isBilibiliLoggedIn() {
+    return document.cookie.includes('DedeUserID');
   }
 
   // 获取视频AID
@@ -283,6 +287,57 @@
     }
   }
 
+  function isUsableLiveAreaResponse(json, requestInfo) {
+    if (!json || json.code !== 0) return false;
+    const data = json.data || {};
+    if (!Array.isArray(data.list)) return false;
+    if (data.list.length > 0) return true;
+    return requestInfo.page > 1 || ('has_more' in data && Number(data.has_more) === 0);
+  }
+
+  function createLiveAreaJsonResponse(json, NativeResponse) {
+    return new NativeResponse(JSON.stringify(json), {
+      status: 200,
+      statusText: 'OK',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
+    });
+  }
+
+  async function fetchLiveAreaFallbackJson(originFetch, requestInfo, init) {
+    const fallbackInit = {
+      ...init,
+      method: 'GET',
+      body: undefined,
+      credentials: 'omit'
+    };
+    const res = await originFetch(requestInfo.url, fallbackInit);
+    return mapLiveAreaRoomList(await res.json(), requestInfo);
+  }
+
+  async function resolveLiveAreaJson(originFetch, requestInfo, originRequest, originInit) {
+    let originJson = null;
+    try {
+      const originRes = await originFetch(originRequest, originInit);
+      originJson = await originRes.clone().json();
+      if (isUsableLiveAreaResponse(originJson, requestInfo)) {
+        return { json: originJson, response: originRes };
+      }
+    } catch (e) {
+      console.warn('[直播分区] 原接口请求失败，尝试旧接口兜底:', e);
+    }
+
+    try {
+      return {
+        json: await fetchLiveAreaFallbackJson(originFetch, requestInfo, originInit),
+        response: null
+      };
+    } catch (e) {
+      console.warn('[直播分区] 旧接口兜底失败:', e);
+      if (originJson) return { json: originJson, response: null };
+      throw e;
+    }
+  }
+
   function mapLiveAreaRoomList(json, requestInfo) {
     if (!json || json.code !== 0) return json;
     const oldData = json.data || {};
@@ -321,7 +376,13 @@
       ttl: json.ttl ?? 1,
       data: {
         list,
+        count,
+        total: count,
+        total_count: count,
+        page: requestInfo.page,
+        page_size: requestInfo.pageSize,
         banner: oldData.banner || [],
+        tags: oldData.tags || [],
         new_tags: oldData.new_tags || [],
         has_more: hasMore,
         vajra: oldData.vajra || [],
@@ -331,7 +392,7 @@
   }
 
   function installLiveAreaUnlock() {
-    if (!options.enableLiveAreaUnlock || !PAGE_RE.live.test(location.href)) return;
+    if (!options.enableLiveAreaUnlock || !PAGE_RE.live.test(location.href) || isBilibiliLoggedIn()) return;
 
     const NativeResponse = unsafeWindow.Response || Response;
     const originFetch = unsafeWindow.fetch?.bind(unsafeWindow);
@@ -341,13 +402,8 @@
         const fallback = getLiveAreaFallbackUrl(rawUrl);
         if (!fallback) return originFetch(input, init);
 
-        const res = await originFetch(fallback.url, { ...init, credentials: 'omit' });
-        const mapped = mapLiveAreaRoomList(await res.json(), fallback);
-        return new NativeResponse(JSON.stringify(mapped), {
-          status: 200,
-          statusText: 'OK',
-          headers: { 'Content-Type': 'application/json; charset=utf-8' }
-        });
+        const result = await resolveLiveAreaJson(originFetch, fallback, input, init);
+        return result.response || createLiveAreaJsonResponse(result.json, NativeResponse);
       };
     }
 
@@ -417,13 +473,16 @@
       emit(this, 'loadstart');
       setReadyState(this, state, 2);
 
-      originFetch(state.fallback.url, { method: 'GET', credentials: 'omit' })
-        .then(async (res) => {
-          const mapped = mapLiveAreaRoomList(await res.json(), state.fallback);
+      resolveLiveAreaJson(originFetch, state.fallback, state.url, {
+        method: state.method || 'GET',
+        headers: state.headers,
+        credentials: this.withCredentials ? 'include' : 'same-origin'
+      })
+        .then(({ json }) => {
           state.status = 200;
           state.statusText = 'OK';
-          state.responseText = JSON.stringify(mapped);
-          state.response = this.responseType === 'json' ? mapped : state.responseText;
+          state.responseText = JSON.stringify(json);
+          state.response = this.responseType === 'json' ? json : state.responseText;
           setReadyState(this, state, 4);
           emit(this, 'load');
           emit(this, 'loadend');
@@ -944,29 +1003,25 @@
   }
 
   /* ========== 1. 如果已登录直接退出 ========== */
-  if (document.cookie.includes('DedeUserID')) return;
+  if (isBilibiliLoggedIn()) return;
 
   /* ========== 2. 阻止登录弹窗 / 自动暂停 ========== */
 
-  /* 2-0 从源头拦截 miniLogin.js 加载（参考 DD1969 方案） */
-  const originAppendChild = Node.prototype.appendChild;
-  Node.prototype.appendChild = function (child) {
-    if (child && child.tagName === 'SCRIPT' && child.src && child.src.includes('miniLogin')) {
-      console.log('[Bilibili脚本] 已拦截 miniLogin.js 加载');
-      return child;                   // 不执行 appendChild，返回原节点即可
-    }
-    return originAppendChild.call(this, child);
-  };
-
   /* 2-1 登录遮罩 / 弹窗选择器 */
-  // —— 全屏遮罩 / 登录弹窗：直接挂在 body 上，覆盖整个页面 ——
-  const GLOBAL_LOGIN_SELECTOR = [
+  // miniLogin 相关脚本也可能参与顶部工具栏渲染，不能从源头拦截脚本加载，只清理实际遮挡页面的登录层。
+  const LOGIN_MASK_SELECTOR = [
     '.bili-mini-mask',
+    '.bili-mini-login-mask',
+    '.mini-login-mask',
+    '.bili-login-v2-mask'
+  ].join(',');
+
+  const LOGIN_POPUP_SELECTOR = [
     '.bili-mini-login',
     '.mini-login',
-    '.mini-login-mask',
-    '.bili-login-v2-mask',
-    '.bili-login-v2-container'
+    '.bili-login-v2-container',
+    '.passport-login-pop',
+    '.passport-login-container'
   ].join(',');
 
   // —— 播放器内部登录提示 ——
@@ -989,13 +1044,32 @@
       visibility: visible !important;
       opacity: 1 !important;
     }
-    /* 全局登录遮罩直接干掉 */
-    body > .bili-mini-mask,
+    .bili-header .center-search-container,
+    .bili-header .nav-search,
+    .bili-header .nav-search-input,
+    .bili-header .search-panel,
+    .bili-header .search-panel-popover {
+      position: relative !important;
+      z-index: 100002 !important;
+      pointer-events: auto !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+    }
+    /* 只全局隐藏明确的遮罩；登录弹窗由 JS 判断是否真正在遮挡页面后再隐藏，避免误伤顶部工具栏。 */
+    .bili-mini-mask,
+    .bili-mini-login-mask,
+    .mini-login-mask,
+    .bili-login-v2-mask {
+      display: none !important;
+      pointer-events: none !important;
+      opacity: 0 !important;
+      visibility: hidden !important;
+    }
     body > .bili-mini-login,
     body > .mini-login,
-    body > .mini-login-mask,
-    body > .bili-login-v2-mask,
-    body > .bili-login-v2-container {
+    body > .bili-login-v2-container,
+    body > .passport-login-pop,
+    body > .passport-login-container {
       display: none !important;
       pointer-events: none !important;
       opacity: 0 !important;
@@ -1012,12 +1086,31 @@
     el.style.setProperty('visibility', 'hidden', 'important');
   };
 
+  const isInHeader = (el) => !!el.closest?.(
+    '.bili-header, #bili-header-container, .bili-header__bar, #biliMainHeader, .fixed-header'
+  );
+
+  const isViewportLoginLayer = (el) => {
+    if (!el || el.nodeType !== 1 || isInHeader(el)) return false;
+    if (el.matches?.(LOGIN_MASK_SELECTOR)) return true;
+    if (!el.matches?.(LOGIN_POPUP_SELECTOR)) return false;
+
+    const style = unsafeWindow.getComputedStyle?.(el) || getComputedStyle(el);
+    const rect = el.getBoundingClientRect?.();
+    const isLayerPosition = ['fixed', 'absolute', 'sticky'].includes(style.position) || el.parentElement === document.body;
+    const isLargeLayer = rect && rect.width >= Math.min(360, unsafeWindow.innerWidth * 0.45) && rect.height >= Math.min(240, unsafeWindow.innerHeight * 0.25);
+    const hasLoginForm = !!el.querySelector?.('input[type="password"], input[placeholder*="密码"], input[placeholder*="登录"], button, [class*="login"]');
+    return isLayerPosition && (isLargeLayer || hasLoginForm);
+  };
+
   const hideLoginLayersInNode = (node) => {
     if (!node || node.nodeType !== 1) return;
 
-    // 全局级登录遮罩 / 弹窗 —— 无论在哪都隐藏
-    if (node.matches?.(GLOBAL_LOGIN_SELECTOR)) hideElement(node);
-    node.querySelectorAll?.(GLOBAL_LOGIN_SELECTOR)?.forEach(hideElement);
+    // 全局级登录遮罩 / 弹窗：只隐藏真正遮挡视口的登录层，避免误伤头部工具栏组件。
+    if (isViewportLoginLayer(node)) hideElement(node);
+    node.querySelectorAll?.(`${LOGIN_MASK_SELECTOR},${LOGIN_POPUP_SELECTOR}`)?.forEach((el) => {
+      if (isViewportLoginLayer(el)) hideElement(el);
+    });
 
     // 播放器内部登录提示 —— 仅隐藏播放器区域内的
     const isInPlayer = (el) => !!el.closest(
