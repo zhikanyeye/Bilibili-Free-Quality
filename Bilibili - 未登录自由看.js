@@ -36,7 +36,10 @@
     TOAST_CHECK_INTERVAL: 100,
     CLICK_TIMEOUT: 800,
     AUTO_RESUME_INTERVAL: 1200,
-    TRIAL_TIMEOUT: 3e8
+    TRIAL_TIMEOUT: 3e8,
+    // v3.5.5 兜底拔高（fallback 内使用）
+    RE_UNLOCK_DELAY: 5000,
+    RE_UNLOCK_INTERVAL: 3000
   };
 
   const options = {
@@ -46,7 +49,9 @@
     enableReplyPagination: GM_getValue('enableReplyPagination', false),
     enableLiveAreaUnlock: GM_getValue('enableLiveAreaUnlock', true),
     // v4 协议级解锁主开关：开（默认）→ playurl 协议级解锁生效，旧客户端架构（试用倒计时延长/按钮自动点击/兜底拔高）停用
-    enableProtocolUnlock: GM_getValue('enableProtocolUnlock', true)
+    enableProtocolUnlock: GM_getValue('enableProtocolUnlock', true),
+    // v3 兜底拔高开关：旧客户端架构启用时（v4 关闭后），画质掉回低画质自动拔高
+    enableReUnlockGuard: GM_getValue('enableReUnlockGuard', true)
   };
 
   const PAGE_RE = {
@@ -1558,9 +1563,82 @@
       return originSetInterval.call(unsafeWindow, fn, delay);
     };
 
-    /* 3-3 自动点击试用按钮 + 画质切换 */
+    /* 3-3 自动点击试用按钮 + 画质切换 + 兜底拔高（吸收 v3.5.5）*/
     const QUALITY_MAP = { 1080: 80, 720: 64, 480: 32, 360: 16 };
-    
+    const TARGET_QUALITY = () => QUALITY_MAP[options.preferQuality] || 80;
+
+    let qualityDropWatcherStarted = false;
+    let reUnlockTimerId = null;
+
+    // 公共：请求目标画质（按钮触发路与兜底路复用）
+    const requestTargetQuality = (reason = 'manual') => {
+      const target = TARGET_QUALITY();
+      try {
+        if (unsafeWindow.player?.getSupportedQualityList?.()?.includes(target)) {
+          Promise.resolve(unsafeWindow.player.requestQuality(target)).then(() => {
+            console.log('[Bilibili脚本] 画质请求成功:', target, '来源:', reason);
+          }).catch((err) => {
+            if (!String(err?.message || err).includes('Same as current quality')) {
+              console.warn('[Bilibili脚本] 画质切换失败:', err, '来源:', reason);
+            }
+          });
+          return true;
+        }
+      } catch (err) {
+        console.warn('[Bilibili脚本] 画质切换失败:', err, '来源:', reason);
+      }
+      return false;
+    };
+
+    // 路径 C-1：试用结束后 N 秒主动补一次画质请求，启动时先立即拔高一次
+    const scheduleReUnlockAfterTrial = () => {
+      if (!options.enableReUnlockGuard) return;
+      requestTargetQuality('reunlock-immediate');
+      startQualityDropWatcher();
+      if (reUnlockTimerId) clearTimeout(reUnlockTimerId);
+      reUnlockTimerId = originSetTimeout.call(unsafeWindow, () => {
+        console.log('[Bilibili脚本] 试用结束兜底：N 秒后再补一次画质请求');
+        requestTargetQuality('reunlock-after-trial');
+        startQualityDropWatcher();
+      }, CONFIG.RE_UNLOCK_DELAY);
+    };
+
+    // 路径 C-2：周期性检测画质掉落，掉回低画质自动拔高 + player 画质变化事件监听
+    const startQualityDropWatcher = () => {
+      if (!options.enableReUnlockGuard) return;
+      if (qualityDropWatcherStarted) return;
+      qualityDropWatcherStarted = true;
+
+      originSetInterval.call(unsafeWindow, () => {
+        try {
+          const cur = unsafeWindow.player?.getCurrentQuality?.();
+          const supported = unsafeWindow.player?.getSupportedQualityList?.();
+          const target = TARGET_QUALITY();
+          if (cur != null && supported?.includes(target) && cur !== target) {
+            console.log('[Bilibili脚本] 画质掉落检测:', cur, '->', target);
+            requestTargetQuality('drop-watch');
+          }
+        } catch (err) { /* 静默 */ }
+      }, CONFIG.RE_UNLOCK_INTERVAL);
+
+      try {
+        const player = unsafeWindow.player;
+        const media = player?.mediaElement?.();
+        if (media && typeof media.addEventListener === 'function') {
+          media.addEventListener('media_qualitychange' in media ? 'media_qualitychange' : 'qualitychange', () => {
+            try {
+              const cur = player?.getCurrentQuality?.();
+              const target = TARGET_QUALITY();
+              if (cur != null && cur !== target) {
+                console.log('[Bilibili脚本] 监听到画质变化事件:', cur, '->', target);
+                requestTargetQuality('qualitychange-event');
+              }
+            } catch (err) { /* 静默 */ }
+          });
+        }
+      } catch (err) { /* 静默 */ }
+    };
+
     // 使用 MutationObserver 而不是 setInterval 来监听按钮出现，性能更好
     const observeTrialButton = () => {
       const observer = new MutationObserver((mutations) => {
@@ -1573,6 +1651,9 @@
         
         setTimeout(() => {
           btn.click();
+          // 兜底立即启动：不依赖 toast 是否出现，覆盖 B 站没弹 toast 或 emit 失败的情况
+          scheduleReUnlockAfterTrial();
+          startQualityDropWatcher();
           
           /* 可选：暂停→切画质→继续播放 */
           if (options.isWaitUntilHighQualityLoaded && unsafeWindow.player?.mediaElement) {
@@ -1588,6 +1669,7 @@
               if ([...toastTexts].some(el => el.textContent.endsWith('试用中'))) {
                 if (wasPlaying) media.play().catch(err => console.warn('[Bilibili脚本] 播放失败:', err));
                 clearInterval(checkToast);
+                requestTargetQuality('trial-toast-detected');
               }
             }, CONFIG.TOAST_CHECK_INTERVAL);
             
@@ -1596,19 +1678,8 @@
           }
 
           /* 画质切换 */
-          const target = QUALITY_MAP[options.preferQuality] || 80;
           setTimeout(() => {
-            try {
-              if (unsafeWindow.player?.getSupportedQualityList?.()?.includes(target)) {
-                Promise.resolve(unsafeWindow.player.requestQuality(target)).catch((err) => {
-                  if (!String(err?.message || err).includes('Same as current quality')) {
-                    console.warn('[Bilibili脚本] 画质切换失败:', err);
-                  }
-                });
-              }
-            } catch (err) {
-              console.warn('[Bilibili脚本] 画质切换失败:', err);
-            }
+            requestTargetQuality('trial-button');
           }, CONFIG.QUALITY_SWITCH_DELAY);
           
           // 重置点击标记
@@ -1682,10 +1753,20 @@ select:hover{border-color:#00aeec}
         <span class="switch" data-key="enableReplyPagination" data-status="${options.enableReplyPagination ? 'on' : 'off'}"></span>
       </div>
       <div class="qp-section-divider"></div>
+      <div class="qp-title">📺 直播设置</div>
+      <div class="qp-row">
+        <span class="qp-label">直播分区连续加载</span>
+        <span class="switch" data-key="enableLiveAreaUnlock" data-status="${options.enableLiveAreaUnlock ? 'on' : 'off'}"></span>
+      </div>
+      <div class="qp-section-divider"></div>
       <div class="qp-title">🛡️ v4 协议级解锁</div>
       <div class="qp-row">
         <span class="qp-label">协议级解锁（推荐）</span>
         <span class="switch" data-key="enableProtocolUnlock" data-status="${options.enableProtocolUnlock ? 'on' : 'off'}"></span>
+      </div>
+      <div class="qp-row">
+        <span class="qp-label">旧架构兜底拔高（关v4时生效）</span>
+        <span class="switch" data-key="enableReUnlockGuard" data-status="${options.enableReUnlockGuard ? 'on' : 'off'}"></span>
       </div>
       <button class="qp-close-btn" onclick="this.parentElement.parentElement.style.display='none'">✓ 保存并关闭</button>
     </div>`;
@@ -1765,6 +1846,8 @@ select:hover{border-color:#00aeec}
           options.enableLiveAreaUnlock = isOn;
         } else if (key === 'enableProtocolUnlock') {
           options.enableProtocolUnlock = isOn;
+        } else if (key === 'enableReUnlockGuard') {
+          options.enableReUnlockGuard = isOn;
         }
         
         GM_setValue(key, isOn);
