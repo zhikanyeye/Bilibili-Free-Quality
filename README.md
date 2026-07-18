@@ -195,6 +195,9 @@
 本项目基于 [GPL-3.0 许可证](https://www.gnu.org/licenses/gpl-3.0.html) 开源。
 
 ---
-**一个公益gpt站点，免费使用gpt5.5、5.4，甚至Claude4.7，邀请链接：点击跳转(https://vsllm.com/i/SKko)**
+**🎁 AI 写作编程利器 · AgentRouter 大模型中转站**
+
+免费用 Claude Opus 4-8 / Claude Opus 4-7 / GPT-5.5 / GLM-5.2，写脚本、改代码、查 bug 都顺手。
+通过邀请链接注册，注册即送好友 **$50 奖励**：[点击跳转 AgentRouter](https://agentrouter.org/register?aff=e8bc)
 
 **Enjoy free 1080P without login!** 🎬✨
