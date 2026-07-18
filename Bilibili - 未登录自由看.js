@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      4.0.0-alpha.6
-// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P；客户端兼容模式自动试用画质 + 拦截画质劫持，fallback 兜底拔高 · DD1969 风格从源头拦截 miniLogin 脚本 + 拦 rcmd 清 buvid3 防登录弹窗 · 彻底屏蔽自动暂停 · WBI 签名自调评论 API，视频/动态/专栏评论完整解锁 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P
+// @version      4.0.0-alpha.7
+// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P；客户端兼容模式自动试用画质 + 拦截画质劫持，fallback 兜底拔高 · 拦 rcmd 清 buvid3 防登录弹窗（DD1969 思路）· 彻底屏蔽自动暂停 · WBI 签名自调评论 API，视频/动态/专栏评论完整解锁 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -561,9 +561,12 @@
           const url = new URL(rawUrl, location.href);
           if (url.hostname !== 'api.bilibili.com') return originFetch(input, init);
 
+          // 强制携带 cookie，确保伪造的 DedeUserID 能让服务端按登录态返回 1080P
+          const mergedInit = { ...(init || {}), credentials: 'include' };
+
           const urlWithTryLook = await buildPlayurlUrl(rawUrl, true);
           const input1 = input instanceof Request ? new Request(urlWithTryLook, input) : urlWithTryLook;
-          const res1 = await originFetch(input1, init);
+          const res1 = await originFetch(input1, mergedInit);
           const json1 = await parseFetchResponseJson(res1);
           if (!isTrialOnlyPlayurl(json1)) {
             writePlayinfo(json1);
@@ -573,7 +576,7 @@
           console.warn('[Bilibili脚本] try_look=1 仍给试看，重试仅 qn=' + PROTOCOL_UNLOCK_TARGET_QN);
           const urlNoTryLook = await buildPlayurlUrl(rawUrl, false);
           const input2 = input instanceof Request ? new Request(urlNoTryLook, input) : urlNoTryLook;
-          const res2 = await originFetch(input2, init);
+          const res2 = await originFetch(input2, mergedInit);
           const json2 = await parseFetchResponseJson(res2);
           writePlayinfo(json2);
           return res2;
@@ -612,13 +615,13 @@
           }
 
           const finalUrl = await buildPlayurlUrl(rawUrl, true);
-          const res = await fetch(finalUrl, { credentials: 'omit' });
+          const res = await fetch(finalUrl, { credentials: 'include' });
           const json = await res.json();
 
           if (isTrialOnlyPlayurl(json)) {
             console.warn('[Bilibili脚本] XHR try_look=1 仍给试看，重试');
             const fallbackUrl = await buildPlayurlUrl(rawUrl, false);
-            const res2 = await fetch(fallbackUrl, { credentials: 'omit' });
+            const res2 = await fetch(fallbackUrl, { credentials: 'include' });
             const json2 = await res2.json();
             writePlayinfo(json2);
             emitXhrFakeResponse(xhr, json2);
@@ -1235,23 +1238,8 @@
     }, 1500);
   }
 
-  // DD1969 风格从源头拦截 miniLogin 脚本，窄化命中 SCRIPT+src.includes('miniLogin')，不误伤顶栏组件
-  let miniLoginBlocked = false;
-  function installMiniLoginGuard() {
-    if (miniLoginBlocked) return;
-    miniLoginBlocked = true;
-    const originAppendChild = Node.prototype.appendChild;
-    Node.prototype.appendChild = function (childElement) {
-      if (childElement && childElement.tagName === 'SCRIPT' && typeof childElement.src === 'string' && childElement.src.includes('miniLogin')) {
-        return null;
-      }
-      return originAppendChild.call(this, childElement);
-    };
-  }
-
   /* ========== 1. 已登录退出 + 主模块安装 ========== */
 
-  installMiniLoginGuard();
   installRcmdLoginGuard();
   installLiveAreaUnlock();
   installPlayurlUnlock();
@@ -1269,7 +1257,7 @@
 
   /* ========== 2. 阻止登录弹窗 / 自动暂停 ========== */
 
-  /* 2-1 登录遮罩 / 弹窗选择器（miniLogin 脚本已被拦，此处仅 MutationObserver 兜底）*/
+  /* 2-1 登录遮罩 / 弹窗选择器 */
   const LOGIN_MASK_SELECTOR = [
     '.bili-mini-mask',
     '.bili-mini-login-mask',

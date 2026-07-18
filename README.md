@@ -1,7 +1,7 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Version](https://img.shields.io/badge/version-4.0.0--alpha.6-orange)
+![Version](https://img.shields.io/badge/version-4.0.0--alpha.7-orange)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 
 ## 📌 简介
@@ -12,7 +12,7 @@
 
 | 模式 | 实现方式 | 副作用 |
 |---|---|---|
-| **协议级解锁**（v4 默认）| 伪造 `DedeUserID` cookie + 清空 `__playinfo__` SSR + 重签 WBI `playurl`（`try_look=1` + `qn=80`）+ 改写 `player/wbi/v2` 登录态，**服务端直接出 1080P 全片流** | 无顶栏/搜索栏消失、无 30 秒截断 |
+| **协议级解锁**（v4 默认）| 伪造 `DedeUserID` cookie + 清空 `__playinfo__` SSR + 重签 WBI `playurl`（`try_look=1` + `qn=80`），**服务端直接出 1080P 全片流** | 无顶栏/搜索栏消失、无 30 秒截断 |
 | **客户端兼容**（一键回退）| 延长试用倒计时 + 自动点击试用按钮 + 画质兜底拔高 + 窄化 `Object.defineProperty` 劫持 | 沿用 v3.5.6 修复，仅作为兜底 |
 
 您是否也遇到这些烦恼？
@@ -106,6 +106,13 @@
 4. 直播分区接口异常时，将 `/xlive/web-interface/v1/second/getList` 兜底到 `/room/v3/area/getRoomList` 并转换数据结构
 
 ## 🔄 更新日志
+
+### v4.0.0-alpha.7 (2026-07-18)
+- 🐛 **修复**：顶栏仍消失——`Node.prototype.appendChild` 全局劫持拦截 `miniLogin` 会误伤 B 站顶栏依赖的脚本加载链路
+  - 回滚 `installMiniLoginGuard` 的 appendChild 劫持，登录弹窗拦截回到安全的 DOM 层屏蔽（2-2 CSS + 2-3 MutationObserver）
+- 🐛 **修复**：1080P 间歇不生效——XHR 链路用 `fetch(..., { credentials: 'omit' })` 把刚注入的伪造 `DedeUserID` 排除在请求外，服务端按游客返回试看流
+  - XHR 链与 fetch 链统一改 `credentials: 'include'`，与 `ensureFakeLoginCookie` 协同生效
+- 📚 **README**：版本 badge → alpha.7；简介移除「改写 player/wbi/v2」已废弃说明
 
 ### v4.0.0-alpha.6 (2026-07-18)
 - 🐛 **根因修复**：视频页导航栏消失——`patchPlayerWbiV2` 用 `new Response(text, …)` 重建会破坏 body 一次性消费特性，影响播放器后续 `.text()/.arrayBuffer()` 二次读取，连带波及顶栏渲染链
