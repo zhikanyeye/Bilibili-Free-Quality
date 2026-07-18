@@ -1,7 +1,7 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Version](https://img.shields.io/badge/version-3.5.4-green)
+![Version](https://img.shields.io/badge/version-3.5.5-green)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 
 ## 📌 简介
@@ -83,6 +83,13 @@
 8. 直播分区接口异常时，将 `/xlive/web-interface/v1/second/getList` 兜底到 `/room/v3/area/getRoomList` 并转换数据结构
 
 ## 🔄 更新日志
+
+### v3.5.5 (2026-07-18)
+- 🐛 **修复**：试用结束后第二次解锁失效问题——B 站试用倒计时被延长后不再弹按钮，原 MutationObserver 监听失效
+- 🛡️ **新增**：试用「试用中」toast 出现后，N 秒主动补一次画质请求兜底（路径 C-1）
+- 🛡️ **新增**：独立的画质掉落循环监听，低画质自动拔高（路径 C-2），不再依赖按钮 DOM
+- ⚙️ **新增**：设置面板「试用后自动续命画质」开关，可一键关闭两路兜底
+- 🔧 **重构**：抽出公共 `requestTargetQuality` 函数，按钮触发路与兜底路复用
 
 ### v3.5.4 (2026-05-31)
 - 🐛 **修复**：不再延长 `miniLogin` 相关定时器，避免顶部工具栏/搜索框初始化链路被误延迟导致加载异常或只剩空白占位
