@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      4.0.0-alpha.4
-// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）+ 改写 player/wbi/v2 登录态，服务端直接出 1080P 全片流；客户端兼容模式自动试用画质 + 拦截画质劫持，fallback 兜底拔高 · 彻底屏蔽登录弹窗与平台自动暂停 · WBI 签名自调评论 API，视频/动态/专栏评论完整解锁 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 旧客户端架构保留可一键回退
+// @version      4.0.0-alpha.5
+// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）+ 改写 player/wbi/v2 登录态，服务端直接出 1080P 全片流；客户端兼容模式自动试用画质 + 拦截画质劫持，fallback 兜底拔高 · 拦截 rcmd 推荐流清 buvid3 防登录弹窗 · 彻底屏蔽登录弹窗与平台自动暂停 · WBI 签名自调评论 API，视频/动态/专栏评论完整解锁 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 旧客户端架构保留可一键回退
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -106,6 +106,23 @@
     if (document.cookie.match(/DedeUserID__ckMd5=([^;]+)/)?.[1]) return;
     const fakeUid = String(Math.floor(Math.random() * 1e10));
     document.cookie = `DedeUserID=${fakeUid}; path=/; domain=.bilibili.com`;
+  }
+
+  // 拦截推荐流 rcmd，每次请求前清掉 buvid3，避免 B 站基于 buvid3 跟踪触发登录要求弹窗。
+  // 思路来自 DD1969 的同名脚本（首页防登录），并泛化到所有 @match 页面。
+  let rcmdGuardInstalled = false;
+  function installRcmdLoginGuard() {
+    if (rcmdGuardInstalled || isBilibiliLoggedIn()) return;
+    rcmdGuardInstalled = true;
+    const originFetch = unsafeWindow.fetch?.bind(unsafeWindow);
+    if (!originFetch) return;
+    unsafeWindow.fetch = function(input, init) {
+      const rawUrl = typeof input === 'string' ? input : (input?.url ?? '');
+      if (rawUrl && rawUrl.includes('top/feed/rcmd')) {
+        document.cookie = 'buvid3=;expires=Thu, 01 Jan 1970 00:00:01 GMT;domain=.bilibili.com;path=/';
+      }
+      return originFetch(input, init);
+    };
   }
 
   // 清空 SSR 注入的 __playinfo__，强制播放器走 fetch/XHR 链拿 playurl。
@@ -1284,6 +1301,7 @@
     }, 1500);
   }
 
+  installRcmdLoginGuard();
   installLiveAreaUnlock();
   installPlayurlUnlock();
   setupDynamicCommentBtnModifier();

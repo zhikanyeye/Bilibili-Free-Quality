@@ -1,7 +1,7 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Version](https://img.shields.io/badge/version-4.0.0--alpha.4-orange)
+![Version](https://img.shields.io/badge/version-4.0.0--alpha.5-orange)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 
 ## 📌 简介
@@ -106,6 +106,11 @@
 4. 直播分区接口异常时，将 `/xlive/web-interface/v1/second/getList` 兜底到 `/room/v3/area/getRoomList` 并转换数据结构
 
 ## 🔄 更新日志
+
+### v4.0.0-alpha.5 (2026-07-18)
+- 🛡️ **新增**：吸收 DD1969「首页防登录」脚本思路——拦截 `top/feed/rcmd` 推荐流，每次请求前清掉 `buvid3`，避免 B 站基于游客 buvid3 跟踪触发登录弹窗
+  - 泛化到所有 @match 页面（不仅限首页），在登录弹窗触发链路源头防御
+- 📚 **README**：版本 badge → alpha.5
 
 ### v4.0.0-alpha.4 (2026-07-18)
 - 🐛 **修复**：切视频时顶栏消失——`__playinfo__` 用 `defineProperty` 锁定 descriptor，B 站 SPA 二次加载无法重新注入 SSR，连带波及顶栏渲染链
