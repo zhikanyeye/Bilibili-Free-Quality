@@ -293,8 +293,40 @@
     if (!json || json.code !== 0) return false;
     const data = json.data || {};
     if (!Array.isArray(data.list)) return false;
-    if (data.list.length > 0) return true;
-    return requestInfo.page > 1 || ('has_more' in data && Number(data.has_more) === 0);
+
+    // case 1：空列表，仅在合理终态时视为可用
+    if (data.list.length === 0) {
+      return requestInfo.page > 1 || ('has_more' in data && Number(data.has_more) === 0);
+    }
+
+    // case 2：列表非空但明显被登录态裁剪——count 与 list 长度严重不匹配
+    const count = Number(data.count || 0);
+    const pageSize = requestInfo.pageSize || 30;
+    const listLen = data.list.length;
+
+    if (count > 0 && listLen < pageSize) {
+      const expectedEndPage = Math.ceil(count / pageSize);
+      const isLastPage = requestInfo.page >= expectedEndPage;
+      if (!isLastPage) {
+        console.warn('[直播分区] 列表疑似被登录态裁剪，走兜底:', {
+          areaId: requestInfo.areaId, page: requestInfo.page, listLen, pageSize, count
+        });
+        return false;
+      }
+    }
+
+    // case 3：has_more 标记与 list 长度矛盾（has_more=0 但 list 满，或反过来）→ 可能裁剪
+    if ('has_more' in data) {
+      const hasMore = Number(data.has_more);
+      if (hasMore === 0 && listLen >= pageSize && count > requestInfo.page * pageSize) {
+        console.warn('[直播分区] has_more 标记与列表长度矛盾，走兜底:', {
+          areaId: requestInfo.areaId, page: requestInfo.page, listLen, pageSize, count, hasMore
+        });
+        return false;
+      }
+    }
+
+    return true;
   }
 
   function createLiveAreaJsonResponse(json, NativeResponse) {
@@ -370,7 +402,20 @@
     });
     const count = Number(oldData.count || 0);
     const pageSize = Math.max(requestInfo.pageSize || 30, list.length || 0, 1);
-    const hasMore = count ? (requestInfo.page * pageSize < count ? 1 : 0) : (list.length >= pageSize ? 1 : 0);
+    // 宁可多翻一页空也不提前停：count 已知时严格按 count 判；count 缺失时倾向 has_more=1，
+    // 让前端多翻一页验证，避免旧接口真实数据被误判为末页导致「显示不全」
+    let hasMore;
+    if (count > 0) {
+      hasMore = requestInfo.page * pageSize < count ? 1 : 0;
+    } else {
+      hasMore = list.length >= pageSize ? 1 : 0;
+      if (list.length > 0 && list.length < pageSize) {
+        console.warn('[直播分区] 旧接口返回不完整但 count 缺失，保守置 has_more=1:', {
+          areaId: requestInfo.areaId, page: requestInfo.page, listLen: list.length, pageSize
+        });
+        hasMore = 1;
+      }
+    }
     return {
       code: 0,
       msg: json.msg || 'success',
@@ -1457,11 +1502,28 @@
    * 仅当用户手动关闭「协议级解锁」开关，本节才作为兜底启用。
    */
   const installClientArchFallback = () => {
-    /* 3-1 放行试用标识 */
+    /* 3-1 放行试用标识：窄化劫持范围，避免误伤顶栏/搜索框初始化链（v3.5.6） */
     const originDef = Object.defineProperty;
+    let definePropertyCallCount = 0;
     Object.defineProperty = function (obj, prop, desc) {
       if (prop === 'isViewToday' || prop === 'isVideoAble') {
-        desc = { get: () => true, enumerable: false, configurable: true };
+        let isLikelyPlayerState = true;
+        try {
+          if (obj === globalThis || obj === unsafeWindow || obj === window) isLikelyPlayerState = false;
+          else if (obj instanceof Element) isLikelyPlayerState = false;
+          else if (desc && 'value' in desc && !('get' in desc) && !('set' in desc)) isLikelyPlayerState = false;
+          else if (desc && typeof desc.get === 'function') {
+            const getterText = String(desc.get);
+            if (!/play|trial|view|able|quality|qn/i.test(getterText)) {
+              isLikelyPlayerState = false;
+            }
+          }
+        } catch (e) { isLikelyPlayerState = false; }
+
+        definePropertyCallCount++;
+        if (isLikelyPlayerState) {
+          desc = { get: () => true, enumerable: false, configurable: true };
+        }
       }
       return originDef.call(this, obj, prop, desc);
     };

@@ -100,6 +100,23 @@
 - 📌 **说明**：本版为 alpha，仅最小新增、不删除旧逻辑，验证协议级解锁在生产环境稳定后切到正式 v4.0
 - 🙏 **致谢**：协议级思路参考 [beefreely](https://github.com/vruses/beefreely) 项目
 
+### v3.5.6 (2026-07-18)
+- 🐛 **缓解**：窄化 `Object.defineProperty` 对 `isViewToday`/`isVideoAble` 的劫持范围，避免误伤顶栏/搜索栏组件初始化链
+  - 现仅当目标对象疑似 player state 时才替换（带 player 上下文线索的 accessor、非 Element/Window、非 data descriptor）
+  - 这是治标方案，长期将改协议级解锁（v4.0）彻底解决家族遗传 bug
+- 📌 **说明**：参考 beefreely 项目（https://github.com/vruses/beefreely）做法，v4.0 将改为拦截 `/x/player/wbi/playurl` 协议层，移除 `setTimeout`/`setInterval` 全局劫持
+
+### v3.5.5 (2026-07-18)
+- 🐛 **修复**：试用结束后第二次解锁失效问题——B 站试用倒计时被延长后不再弹按钮，原 MutationObserver 监听失效
+- 🐛 **修复**：试用结束瞬间画质掉回 360P 的回归——兜底改为按钮点击后立即启动，不依赖 `试用中` toast
+- 🛡️ **新增**：试用「试用中」toast 出现后，N 秒主动补一次画质请求兜底（路径 C-1）
+- 🛡️ **新增**：独立的画质掉落循环监听 + player 画质变化事件即时拔高（路径 C-2），不再依赖按钮 DOM
+- ⚙️ **优化**：兜底轮询周期 30s → 3s，掉回低画质恢复更快
+- 🐛 **修复**：生活区等分区直播列表「显示不全」问题——`isUsableLiveAreaResponse` 收紧判定，检测到 `count` 与 `list.length` 严重不匹配视为登录态裁剪走兜底
+- 🛡️ **优化**：旧接口 `has_more` 计算改为「宁可多翻一页」策略，避免误判末页导致显示不全
+- ⚙️ **新增**：设置面板「试用后自动续命画质」开关，可一键关闭两路兜底
+- 🔧 **重构**：抽出公共 `requestTargetQuality` 函数，按钮触发路与兜底路复用
+
 ### v3.5.4 (2026-05-31)
 - 🐛 **修复**：不再延长 `miniLogin` 相关定时器，避免顶部工具栏/搜索框初始化链路被误延迟导致加载异常或只剩空白占位
 
