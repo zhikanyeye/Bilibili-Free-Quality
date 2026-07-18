@@ -49,9 +49,7 @@
     enableReplyPagination: GM_getValue('enableReplyPagination', false),
     enableLiveAreaUnlock: GM_getValue('enableLiveAreaUnlock', true),
     // v4 协议级解锁主开关：开（默认）→ playurl 协议级解锁生效，旧客户端架构（试用倒计时延长/按钮自动点击/兜底拔高）停用
-    enableProtocolUnlock: GM_getValue('enableProtocolUnlock', true),
-    // v3 兜底拔高开关：旧客户端架构启用时（v4 关闭后），画质掉回低画质自动拔高
-    enableReUnlockGuard: GM_getValue('enableReUnlockGuard', true)
+    enableProtocolUnlock: GM_getValue('enableProtocolUnlock', true)
   };
 
   const PAGE_RE = {
@@ -1592,7 +1590,6 @@
 
     // 路径 C-1：试用结束后 N 秒主动补一次画质请求，启动时先立即拔高一次
     const scheduleReUnlockAfterTrial = () => {
-      if (!options.enableReUnlockGuard) return;
       requestTargetQuality('reunlock-immediate');
       startQualityDropWatcher();
       if (reUnlockTimerId) clearTimeout(reUnlockTimerId);
@@ -1605,7 +1602,6 @@
 
     // 路径 C-2：周期性检测画质掉落，掉回低画质自动拔高 + player 画质变化事件监听
     const startQualityDropWatcher = () => {
-      if (!options.enableReUnlockGuard) return;
       if (qualityDropWatcherStarted) return;
       qualityDropWatcherStarted = true;
 
@@ -1759,14 +1755,10 @@ select:hover{border-color:#00aeec}
         <span class="switch" data-key="enableLiveAreaUnlock" data-status="${options.enableLiveAreaUnlock ? 'on' : 'off'}"></span>
       </div>
       <div class="qp-section-divider"></div>
-      <div class="qp-title">🛡️ v4 协议级解锁</div>
+      <div class="qp-title">🛡️ 解锁模式</div>
       <div class="qp-row">
-        <span class="qp-label">协议级解锁（推荐）</span>
+        <span class="qp-label">协议级解锁（推荐·无副作用）</span>
         <span class="switch" data-key="enableProtocolUnlock" data-status="${options.enableProtocolUnlock ? 'on' : 'off'}"></span>
-      </div>
-      <div class="qp-row">
-        <span class="qp-label">旧架构兜底拔高（关v4时生效）</span>
-        <span class="switch" data-key="enableReUnlockGuard" data-status="${options.enableReUnlockGuard ? 'on' : 'off'}"></span>
       </div>
       <button class="qp-close-btn" onclick="this.parentElement.parentElement.style.display='none'">✓ 保存并关闭</button>
     </div>`;
@@ -1846,8 +1838,6 @@ select:hover{border-color:#00aeec}
           options.enableLiveAreaUnlock = isOn;
         } else if (key === 'enableProtocolUnlock') {
           options.enableProtocolUnlock = isOn;
-        } else if (key === 'enableReUnlockGuard') {
-          options.enableReUnlockGuard = isOn;
         }
         
         GM_setValue(key, isOn);
