@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      4.0.0-alpha.2
-// @description  🎬 B 站未登录解放脚本 | 协议级拦截 playurl 直接拿 1080P 全片流，不走客户端试用倒计时 · 彻底屏蔽登录弹窗与平台自动暂停 · WBI 签名自调评论 API，视频/动态/专栏评论完整解锁 · 直播分区接口兜底，下拉不再卡加载 · 可视化面板可切 1080/720/480/360P · fetch + XHR 双链拦截 + try_look 失败兜底 · 旧客户端架构保留可一键回退
+// @version      4.0.0-alpha.3
+// @description  🎬 B 站未登录解放脚本 | 伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）+ 改写 player/wbi/v2 登录态，服务端直接出 1080P 全片流 · 彻底屏蔽登录弹窗与平台自动暂停 · WBI 签名自调评论 API，视频/动态/专栏评论完整解锁 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · fetch + XHR 双链拦截 + try_look 失败兜底 · 旧客户端架构保留可一键回退
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -95,7 +95,28 @@
   }
 
   function isBilibiliLoggedIn() {
-    return document.cookie.includes('DedeUserID');
+    return document.cookie.includes('DedeUserID__ckMd5=') && /\S/.test(document.cookie.match(/DedeUserID__ckMd5=([^;]+)/)?.[1] || '');
+  }
+
+  // 协议级解锁前置：向 .bilibili.com 注入伪造 DedeUserID cookie，
+  // 让服务端在所有后续 playurl / player 请求中按登录态响应（直接出 1080P）。
+  // DedeUserID__ckMd5 是带签名校验的真实登录标记，不可伪造；仅 DedeUserID 可用于"看上去登录"。
+  // 为避免和 isBilibiliLoggedIn 的判定冲突，本脚本使用独立的 ckMd5 检查。
+  function ensureFakeLoginCookie() {
+    if (document.cookie.match(/DedeUserID__ckMd5=([^;]+)/)?.[1]) return;
+    const fakeUid = String(Math.floor(Math.random() * 1e10));
+    document.cookie = `DedeUserID=${fakeUid}; path=/; domain=.bilibili.com`;
+  }
+
+  // 清空播放器 SSR 注入的 __playinfo__，强制播放器走 fetch/XHR 链拿 playurl（拦截链才能命中）。
+  function clearPlayinfoSSR() {
+    try {
+      Object.defineProperty(unsafeWindow, '__playinfo__', { get: () => null, configurable: true });
+      const s = document.createElement('script');
+      s.textContent = 'window.playurlSSRData = {}';
+      document.documentElement.appendChild(s);
+      document.documentElement.removeChild(s);
+    } catch (e) {}
   }
 
   // 获取视频AID
@@ -444,6 +465,87 @@
   const PROTOCOL_UNLOCK_TARGET_QN = 80;
   let playurlUnlockInstalled = false;
 
+  // 回写 __playinfo__，让播放器初值就读到解锁后的高清数据
+  function writePlayinfo(json) {
+    try {
+      if (!json || json.code !== 0) return;
+      Object.defineProperty(unsafeWindow, '__playinfo__', {
+        get: () => json,
+        configurable: true,
+      });
+    } catch (e) {}
+  }
+
+  // 伪造 XHR 响应，让拦截到的 json 透传给调用方
+  function emitXhrFakeResponse(xhr, json) {
+    const text = JSON.stringify(json);
+    Object.defineProperties(xhr, {
+      readyState: { value: 4, configurable: true },
+      status: { value: 200, configurable: true },
+      statusText: { value: 'OK', configurable: true },
+      responseText: { value: text, configurable: true },
+      response: { value: text, configurable: true },
+    });
+    xhr.dispatchEvent(new Event('readystatechange'));
+    xhr.dispatchEvent(new Event('load'));
+    xhr.dispatchEvent(new Event('loadend'));
+  }
+
+  // 修改 /x/player/wbi/v2 响应，让播放器 UI 按登录态渲染
+  async function patchPlayerWbiV2(input, init, originFetch) {
+    try {
+      const res = await originFetch(input, init);
+      const json = await res.clone().json().catch(() => null);
+      if (json && json.code === 0 && json.data) {
+        json.data.login_mid = Math.floor(Math.random() * 100000);
+        if ('need_login_subtitle' in json.data) json.data.need_login_subtitle = false;
+        if (json.data.level_info) json.data.level_info.current_level = 6;
+        const text = JSON.stringify(json);
+        return new Response(text, {
+          status: res.status,
+          statusText: res.statusText,
+          headers: res.headers,
+        });
+      }
+      return res;
+    } catch (e) {
+      return originFetch(input, init);
+    }
+  }
+
+  function installPlayerInfoUnlock() {
+    const XHR = unsafeWindow.XMLHttpRequest;
+    if (!XHR || XHR.prototype.__bfqPlayerPatched) return;
+    XHR.prototype.__bfqPlayerPatched = true;
+    const originOpen = XHR.prototype.open;
+    const originSend = XHR.prototype.send;
+    XHR.prototype.open = function(method, url, ...rest) {
+      this.__bfqPlayerUrl = typeof url === 'string' ? url : '';
+      return originOpen.call(this, method, url, ...rest);
+    };
+    XHR.prototype.send = function(...args) {
+      const u = this.__bfqPlayerUrl;
+      if (!u || !u.includes('/x/player/wbi/v2')) {
+        return originSend.apply(this, args);
+      }
+      const xhr = this;
+      (async () => {
+        try {
+          const res = await fetch(u, { credentials: 'omit' });
+          const json = await res.json().catch(() => null);
+          if (json && json.code === 0 && json.data) {
+            json.data.login_mid = Math.floor(Math.random() * 100000);
+            if ('need_login_subtitle' in json.data) json.data.need_login_subtitle = false;
+            if (json.data.level_info) json.data.level_info.current_level = 6;
+          }
+          emitXhrFakeResponse(xhr, json || {});
+        } catch (e) {
+          originSend.apply(xhr, args);
+        }
+      })();
+    };
+  }
+
   async function buildPlayurlUrl(rawUrl, useTryLook = true) {
     const url = new URL(rawUrl, location.href);
     const params = {};
@@ -485,11 +587,20 @@
     if (playurlUnlockInstalled) return;
     playurlUnlockInstalled = true;
 
+    ensureFakeLoginCookie();
+    clearPlayinfoSSR();
+    installPlayerInfoUnlock();
+
     /* ---- fetch 链 ---- */
     const originFetch = unsafeWindow.fetch?.bind(unsafeWindow);
     if (originFetch) {
       unsafeWindow.fetch = async function(input, init) {
         let rawUrl = typeof input === 'string' ? input : (input?.url ?? '');
+
+        if (rawUrl && rawUrl.includes('/x/player/wbi/v2')) {
+          return patchPlayerWbiV2(input, init, originFetch);
+        }
+
         if (!rawUrl || !rawUrl.includes('/x/player/wbi/playurl')) {
           return originFetch(input, init);
         }
@@ -504,13 +615,17 @@
           const res1 = await originFetch(input1, init);
           const json1 = await parseFetchResponseJson(res1);
           if (!isTrialOnlyPlayurl(json1)) {
+            writePlayinfo(json1);
             return res1;
           }
 
           console.warn('[Bilibili脚本] try_look=1 仍给试看，重试仅 qn=' + PROTOCOL_UNLOCK_TARGET_QN);
           const urlNoTryLook = await buildPlayurlUrl(rawUrl, false);
           const input2 = input instanceof Request ? new Request(urlNoTryLook, input) : urlNoTryLook;
-          return originFetch(input2, init);
+          const res2 = await originFetch(input2, init);
+          const json2 = await parseFetchResponseJson(res2);
+          writePlayinfo(json2);
+          return res2;
         } catch (e) {
           console.warn('[Bilibili脚本] playurl 解锁失败，回退:', e);
           return originFetch(input, init);
@@ -555,9 +670,11 @@
             const fallbackUrl = await buildPlayurlUrl(rawUrl, false);
             const res2 = await fetch(fallbackUrl, { credentials: 'omit' });
             const json2 = await res2.json();
+            writePlayinfo(json2);
             emitXhrFakeResponse(xhr, json2);
             return;
           }
+          writePlayinfo(json);
           emitXhrFakeResponse(xhr, json);
         } catch (e) {
           console.warn('[Bilibili脚本] XHR playurl 解锁失败:', e);
@@ -565,28 +682,6 @@
         }
       })();
     };
-
-    // 伪造 XHR 响应
-    function emitXhrFakeResponse(xhr, json) {
-      const text = JSON.stringify(json);
-      const readyStateDesc = { value: 4, writable: false, configurable: true };
-      const statusDesc = { value: 200, writable: false, configurable: true };
-      const statusTextDesc = { value: 'OK', writable: false, configurable: true };
-      const responseTextDesc = { value: text, writable: false, configurable: true };
-      const responseDesc = { value: text, writable: false, configurable: true };
-
-      Object.defineProperties(xhr, {
-        readyState: readyStateDesc,
-        status: statusDesc,
-        statusText: statusTextDesc,
-        responseText: responseTextDesc,
-        response: responseDesc
-      });
-
-      xhr.dispatchEvent(new Event('readystatechange'));
-      xhr.dispatchEvent(new Event('load'));
-      xhr.dispatchEvent(new Event('loadend'));
-    }
   }
 
   function installLiveAreaUnlock() {
