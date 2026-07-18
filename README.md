@@ -1,7 +1,7 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Version](https://img.shields.io/badge/version-3.5.6-green)
+![Version](https://img.shields.io/badge/version-4.0.0--alpha.2-orange)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 
 ## 📌 简介
@@ -83,6 +83,22 @@
 8. 直播分区接口异常时，将 `/xlive/web-interface/v1/second/getList` 兜底到 `/room/v3/area/getRoomList` 并转换数据结构
 
 ## 🔄 更新日志
+
+### v4.0.0-alpha.2 (2026-07-18)
+- 🚧 **新增**：XHR 链路 playurl 拦截，覆盖老播放器或某些走 XHR 的页面
+- 🛡️ **新增**：`try_look=1` 失败兜底——若服务端仍只给试看片段，自动去掉 `try_look` 仅保留 `qn=80` 重试一次
+- 🔧 **重构**：旧客户端架构（试用倒计时延长/按钮自动点击/`Object.defineProperty` 劫持）整体包成 `installClientArchFallback()`，仅当 v4 开关关闭时启用
+- ⚙️ **新增**：设置面板「🛡️ v4 协议级解锁」开关，默认开；关闭即回退旧客户端架构
+- 🐛 **修复根因**：v3.5.6 的试用结束问题——协议级解锁不再依赖客户端试用倒计时，服务端直接出 1080P 全片流
+
+### v4.0.0-alpha.1 (2026-07-18)
+- 🚧 **新增**：协议级画质解锁（第一刀），参考 beefreely 项目做法
+  - 拦截 `/x/player/wbi/playurl` 请求，改参数为 `qn=80(1080P)+try_look=1`，删除旧 `w_rid`/`wts` 后用本地 WBI 算法重签
+  - 服务端直接返回 1080P 流，前端 `__playinfo__` 自动拿到正确数据
+  - **不动 `Object.defineProperty`、不改 `setTimeout/setInterval`** → 不再有顶栏/搜索栏消失副作用
+- 🔁 **保留**：旧的客户端架构（按钮劫持、试用倒计时延长、兜底拔高）暂时保留作为兜底，后续 alpha 版本逐步移除
+- 📌 **说明**：本版为 alpha，仅最小新增、不删除旧逻辑，验证协议级解锁在生产环境稳定后切到正式 v4.0
+- 🙏 **致谢**：协议级思路参考 [beefreely](https://github.com/vruses/beefreely) 项目
 
 ### v3.5.6 (2026-07-18)
 - 🐛 **缓解**：窄化 `Object.defineProperty` 对 `isViewToday`/`isVideoAble` 的劫持范围，避免误伤顶栏/搜索栏组件初始化链

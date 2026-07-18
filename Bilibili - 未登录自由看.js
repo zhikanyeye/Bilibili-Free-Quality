@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      3.5.6
-// @description  v3.5.6：窄化 Object.defineProperty 劫持范围，缓解顶栏/搜索栏消失；长期将改协议级解锁（v4.0）
+// @version      4.0.0-alpha.2
+// @description  🎬 B 站未登录解放脚本 | 协议级拦截 playurl 直接拿 1080P 全片流，不走客户端试用倒计时 · 彻底屏蔽登录弹窗与平台自动暂停 · WBI 签名自调评论 API，视频/动态/专栏评论完整解锁 · 直播分区接口兜底，下拉不再卡加载 · 可视化面板可切 1080/720/480/360P · fetch + XHR 双链拦截 + try_look 失败兜底 · 旧客户端架构保留可一键回退
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -37,9 +37,9 @@
     CLICK_TIMEOUT: 800,
     AUTO_RESUME_INTERVAL: 1200,
     TRIAL_TIMEOUT: 3e8,
+    // 兜底拔高配置（fallback 内使用）
     RE_UNLOCK_DELAY: 5000,
-    RE_UNLOCK_INTERVAL: 3000,
-    QUALITY_DROP_WATCH_DELAY: 7000
+    RE_UNLOCK_INTERVAL: 3000
   };
 
   const options = {
@@ -48,7 +48,7 @@
     enableCommentUnlock: GM_getValue('enableCommentUnlock', true),
     enableReplyPagination: GM_getValue('enableReplyPagination', false),
     enableLiveAreaUnlock: GM_getValue('enableLiveAreaUnlock', true),
-    enableReUnlockGuard: GM_getValue('enableReUnlockGuard', true)
+    enableProtocolUnlock: GM_getValue('enableProtocolUnlock', true)  // false 时回退旧客户端架构
   };
 
   const PAGE_RE = {
@@ -302,12 +302,10 @@
     }
 
     // case 2：列表非空但明显被登录态裁剪——count 与 list 长度严重不匹配
-    // B 站新接口对未登录常返回「裁剪版」list（数据有但截短），原 page_size 通常 30
     const count = Number(data.count || 0);
     const pageSize = requestInfo.pageSize || 30;
     const listLen = data.list.length;
 
-    // count 已知但当前页 list 远少于 page_size 且不是末页 → 疑似裁剪
     if (count > 0 && listLen < pageSize) {
       const expectedEndPage = Math.ceil(count / pageSize);
       const isLastPage = requestInfo.page >= expectedEndPage;
@@ -412,10 +410,9 @@
     if (count > 0) {
       hasMore = requestInfo.page * pageSize < count ? 1 : 0;
     } else {
-      // count 缺失：list 满页视为可能有下一页，list 不满也可能是中间页（旧接口 count 字段未必准）
       hasMore = list.length >= pageSize ? 1 : 0;
       if (list.length > 0 && list.length < pageSize) {
-        console.warn('[直播分区] 旧接口返回不完整但 count 缺失，保守置有 has_more=1:', {
+        console.warn('[直播分区] 旧接口返回不完整但 count 缺失，保守置 has_more=1:', {
           areaId: requestInfo.areaId, page: requestInfo.page, listLen: list.length, pageSize
         });
         hasMore = 1;
@@ -441,6 +438,155 @@
         cover_source: oldData.cover_source || 0
       }
     };
+  }
+
+  /* ========== 协议级画质解锁（拦截 playurl，服务端直接出 1080P）========== */
+  const PROTOCOL_UNLOCK_TARGET_QN = 80;
+  let playurlUnlockInstalled = false;
+
+  async function buildPlayurlUrl(rawUrl, useTryLook = true) {
+    const url = new URL(rawUrl, location.href);
+    const params = {};
+    for (const [k, v] of url.searchParams.entries()) {
+      if (k === 'w_rid' || k === 'wts') continue;
+      params[k] = v;
+    }
+    params.qn = String(PROTOCOL_UNLOCK_TARGET_QN);
+    if (useTryLook) params.try_look = '1';
+    const signedQuery = await getWbiQueryString(params);
+    return `${url.origin}${url.pathname}?${signedQuery}`;
+  }
+
+  function isTrialOnlyPlayurl(json) {
+    try {
+      if (!json || json.code !== 0) return false;
+      const data = json.data || {};
+      if (data.isPreview === 1 || data.preview === 1) return true;
+      if (typeof data.need_login === 'number' && data.need_login === 1) return true;
+      if (data.dash && Array.isArray(data.dash.video) && data.dash.video.length > 0) {
+        const maxQ = Math.max(...data.dash.video.map(v => v.id || 0));
+        if (maxQ <= 32) return true;
+      }
+      return false;
+    } catch (e) { return false; }
+  }
+
+  async function parseFetchResponseJson(res) {
+    try {
+      return await res.clone().json();
+    } catch (e) {
+      try { return JSON.parse(await res.clone().text()); } catch (e2) { return null; }
+    }
+  }
+
+  function installPlayurlUnlock() {
+    if (!PAGE_RE.video.test(location.href) && !PAGE_RE.festival.test(location.href) && !PAGE_RE.list.test(location.href)) return;
+    if (isBilibiliLoggedIn()) return;
+    if (playurlUnlockInstalled) return;
+    playurlUnlockInstalled = true;
+
+    /* ---- fetch 链 ---- */
+    const originFetch = unsafeWindow.fetch?.bind(unsafeWindow);
+    if (originFetch) {
+      unsafeWindow.fetch = async function(input, init) {
+        let rawUrl = typeof input === 'string' ? input : (input?.url ?? '');
+        if (!rawUrl || !rawUrl.includes('/x/player/wbi/playurl')) {
+          return originFetch(input, init);
+        }
+
+        try {
+          const url = new URL(rawUrl, location.href);
+          if (url.hostname !== 'api.bilibili.com') return originFetch(input, init);
+
+          const urlWithTryLook = await buildPlayurlUrl(rawUrl, true);
+          const input1 = input instanceof Request ? new Request(urlWithTryLook, input) : urlWithTryLook;
+          console.log('[Bilibili脚本] playurl 协议级解锁命中 qn=' + PROTOCOL_UNLOCK_TARGET_QN + ' try_look=1');
+          const res1 = await originFetch(input1, init);
+          const json1 = await parseFetchResponseJson(res1);
+          if (!isTrialOnlyPlayurl(json1)) {
+            return res1;
+          }
+
+          console.warn('[Bilibili脚本] try_look=1 仍给试看，重试仅 qn=' + PROTOCOL_UNLOCK_TARGET_QN);
+          const urlNoTryLook = await buildPlayurlUrl(rawUrl, false);
+          const input2 = input instanceof Request ? new Request(urlNoTryLook, input) : urlNoTryLook;
+          return originFetch(input2, init);
+        } catch (e) {
+          console.warn('[Bilibili脚本] playurl 解锁失败，回退:', e);
+          return originFetch(input, init);
+        }
+      };
+    }
+
+    /* ---- XHR 链 ---- */
+    const XHR = unsafeWindow.XMLHttpRequest;
+    if (!XHR || XHR.prototype.__bfqPlayurlPatched) return;
+    XHR.prototype.__bfqPlayurlPatched = true;
+
+    const originOpen = XHR.prototype.open;
+    const originSend = XHR.prototype.send;
+
+    XHR.prototype.open = function(method, url, ...rest) {
+      this.__bfqPlayurlUrl = typeof url === 'string' ? url : (url?.url ?? '');
+      return originOpen.call(this, method, url, ...rest);
+    };
+
+    XHR.prototype.send = function(...args) {
+      const rawUrl = this.__bfqPlayurlUrl;
+      if (!rawUrl || !rawUrl.includes('/x/player/wbi/playurl')) {
+        return originSend.apply(this, args);
+      }
+
+      const xhr = this;
+      (async () => {
+        try {
+          const url = new URL(rawUrl, location.href);
+          if (url.hostname !== 'api.bilibili.com') {
+            return originSend.apply(xhr, args);
+          }
+
+          const finalUrl = await buildPlayurlUrl(rawUrl, true);
+          console.log('[Bilibili脚本] XHR playurl 解锁命中');
+          const res = await fetch(finalUrl, { credentials: 'omit' });
+          const json = await res.json();
+
+          if (isTrialOnlyPlayurl(json)) {
+            console.warn('[Bilibili脚本] XHR try_look=1 仍给试看，重试');
+            const fallbackUrl = await buildPlayurlUrl(rawUrl, false);
+            const res2 = await fetch(fallbackUrl, { credentials: 'omit' });
+            const json2 = await res2.json();
+            emitXhrFakeResponse(xhr, json2);
+            return;
+          }
+          emitXhrFakeResponse(xhr, json);
+        } catch (e) {
+          console.warn('[Bilibili脚本] XHR playurl 解锁失败:', e);
+          originSend.apply(xhr, args);
+        }
+      })();
+    };
+
+    // 伪造 XHR 响应
+    function emitXhrFakeResponse(xhr, json) {
+      const text = JSON.stringify(json);
+      const readyStateDesc = { value: 4, writable: false, configurable: true };
+      const statusDesc = { value: 200, writable: false, configurable: true };
+      const statusTextDesc = { value: 'OK', writable: false, configurable: true };
+      const responseTextDesc = { value: text, writable: false, configurable: true };
+      const responseDesc = { value: text, writable: false, configurable: true };
+
+      Object.defineProperties(xhr, {
+        readyState: readyStateDesc,
+        status: statusDesc,
+        statusText: statusTextDesc,
+        responseText: responseTextDesc,
+        response: responseDesc
+      });
+
+      xhr.dispatchEvent(new Event('readystatechange'));
+      xhr.dispatchEvent(new Event('load'));
+      xhr.dispatchEvent(new Event('loadend'));
+    }
   }
 
   function installLiveAreaUnlock() {
@@ -1045,6 +1191,7 @@
   }
 
   installLiveAreaUnlock();
+  installPlayurlUnlock();
   setupDynamicCommentBtnModifier();
 
   /* ========== 初始化评论模块（无论是否登录都执行） ========== */
@@ -1329,210 +1476,199 @@
     });
   })();
 
-  /* ========== 3. 无限试用核心 ========== */
-  /* 3-1 放行试用标识：窄化劫持范围，避免误伤顶栏/搜索框初始化链
-   * v3.5.6：只劫持带 play/player 上下文的对象，避免顶栏组件初始化时的同名属性被误改
-   */
-  const originDef = Object.defineProperty;
-  let definePropertyCallCount = 0;
-  Object.defineProperty = function (obj, prop, desc) {
-    if (prop === 'isViewToday' || prop === 'isVideoAble') {
-      // 排除明显不是 player state 的对象，避免误伤：
-      // - 全局/窗口/Document/Element 这些通常是 UI 组件初始化上下文
-      // - desc 是 data descriptor（value+writable）而非 accessor 时，通常不是 player state
-      let isLikelyPlayerState = true;
-      try {
-        if (obj === globalThis || obj === unsafeWindow || obj === window) isLikelyPlayerState = false;
-        else if (obj instanceof Element) isLikelyPlayerState = false;
-        else if (desc && 'value' in desc && !('get' in desc) && !('set' in desc)) isLikelyPlayerState = false;
-        else if (desc && typeof desc.get === 'function') {
-          // 进一步检查 getter 函数体是否包含 player 状态相关 hint
-          const getterText = String(desc.get);
-          if (!/play|trial|view|able|quality|qn/i.test(getterText)) {
-            // 没有 player 上下文线索的 accessor，也可能是 UI 组件的 computed 属性，跳过
-            isLikelyPlayerState = false;
+  /* ========== 客户端兜底（关闭协议级解锁时启用）========== */
+  const installClientArchFallback = () => {
+    const originDef = Object.defineProperty;
+    let definePropertyCallCount = 0;
+    Object.defineProperty = function (obj, prop, desc) {
+      if (prop === 'isViewToday' || prop === 'isVideoAble') {
+        let isLikelyPlayerState = true;
+        try {
+          if (obj === globalThis || obj === unsafeWindow || obj === window) isLikelyPlayerState = false;
+          else if (obj instanceof Element) isLikelyPlayerState = false;
+          else if (desc && 'value' in desc && !('get' in desc) && !('set' in desc)) isLikelyPlayerState = false;
+          else if (desc && typeof desc.get === 'function') {
+            const getterText = String(desc.get);
+            if (!/play|trial|view|able|quality|qn/i.test(getterText)) {
+              isLikelyPlayerState = false;
+            }
           }
+        } catch (e) { isLikelyPlayerState = false; }
+
+        definePropertyCallCount++;
+        if (isLikelyPlayerState) {
+          desc = { get: () => true, enumerable: false, configurable: true };
         }
-      } catch (e) { isLikelyPlayerState = false; }
-
-      definePropertyCallCount++;
-      if (isLikelyPlayerState) {
-        desc = { get: () => true, enumerable: false, configurable: true };
       }
-    }
-    return originDef.call(this, obj, prop, desc);
-  };
+      return originDef.call(this, obj, prop, desc);
+    };
 
-  /* 3-2 把试用倒计时延长到 3 亿秒 */
-  const originSetTimeout = unsafeWindow.setTimeout;
-  const originSetInterval = unsafeWindow.setInterval;
-  const shouldExtendTrialTimer = (fn, delayNum) => {
-    if (delayNum !== 30000 && delayNum !== 60000 && delayNum !== 62000 && delayNum !== 90000) return false;
-    const fnText = typeof fn === 'function' ? String(fn) : String(fn || '');
-    return (
-      fnText.includes('试看') ||
-      fnText.includes('trial') ||
-      fnText.includes('isViewToday') ||
-      fnText.includes('isVideoAble') ||
-      fnText.includes('absolutePlayTime')
-    );
-  };
+    /* 3-2 试用倒计时延长到 3 亿秒 */
+    const originSetTimeout = unsafeWindow.setTimeout;
+    const originSetInterval = unsafeWindow.setInterval;
+    const shouldExtendTrialTimer = (fn, delayNum) => {
+      if (delayNum !== 30000 && delayNum !== 60000 && delayNum !== 62000 && delayNum !== 90000) return false;
+      const fnText = typeof fn === 'function' ? String(fn) : String(fn || '');
+      return (
+        fnText.includes('试看') ||
+        fnText.includes('trial') ||
+        fnText.includes('isViewToday') ||
+        fnText.includes('isVideoAble') ||
+        fnText.includes('absolutePlayTime')
+      );
+    };
 
-  unsafeWindow.setTimeout = (fn, delay) => {
-    const delayNum = Number(delay);
-    if (shouldExtendTrialTimer(fn, delayNum)) {
-      delay = CONFIG.TRIAL_TIMEOUT;
-    }
-    return originSetTimeout.call(unsafeWindow, fn, delay);
-  };
-  unsafeWindow.setInterval = (fn, delay) => {
-    const delayNum = Number(delay);
-    if (shouldExtendTrialTimer(fn, delayNum)) {
-      delay = CONFIG.TRIAL_TIMEOUT;
-    }
-    return originSetInterval.call(unsafeWindow, fn, delay);
-  };
-
-  /* 3-3 自动点击试用按钮 + 画质切换 */
-  const QUALITY_MAP = { 1080: 80, 720: 64, 480: 32, 360: 16 };
-  const TARGET_QUALITY = () => QUALITY_MAP[options.preferQuality] || 80;
-
-  let qualityDropWatcherStarted = false;
-  let reUnlockTimerId = null;
-
-  // 公共：请求目标画质（按钮触发路与兜底路复用）
-  const requestTargetQuality = (reason = 'manual') => {
-    const target = TARGET_QUALITY();
-    try {
-      if (unsafeWindow.player?.getSupportedQualityList?.()?.includes(target)) {
-        Promise.resolve(unsafeWindow.player.requestQuality(target)).then(() => {
-          console.log('[Bilibili脚本] 画质请求成功:', target, '来源:', reason);
-        }).catch((err) => {
-          if (!String(err?.message || err).includes('Same as current quality')) {
-            console.warn('[Bilibili脚本] 画质切换失败:', err, '来源:', reason);
-          }
-        });
-        return true;
+    unsafeWindow.setTimeout = (fn, delay) => {
+      const delayNum = Number(delay);
+      if (shouldExtendTrialTimer(fn, delayNum)) {
+        delay = CONFIG.TRIAL_TIMEOUT;
       }
-    } catch (err) {
-      console.warn('[Bilibili脚本] 画质切换失败:', err, '来源:', reason);
-    }
-    return false;
-  };
+      return originSetTimeout.call(unsafeWindow, fn, delay);
+    };
+    unsafeWindow.setInterval = (fn, delay) => {
+      const delayNum = Number(delay);
+      if (shouldExtendTrialTimer(fn, delayNum)) {
+        delay = CONFIG.TRIAL_TIMEOUT;
+      }
+      return originSetInterval.call(unsafeWindow, fn, delay);
+    };
 
-  // 路径 C-1：试用结束后 N 秒主动补一次画质请求，启动时先立即拔高一次避免试用结束瞬间已掉回 360P
-  const scheduleReUnlockAfterTrial = () => {
-    if (!options.enableReUnlockGuard) return;
-    requestTargetQuality('reunlock-immediate');
-    startQualityDropWatcher();
-    if (reUnlockTimerId) clearTimeout(reUnlockTimerId);
-    reUnlockTimerId = originSetTimeout.call(unsafeWindow, () => {
-      console.log('[Bilibili脚本] 试用结束兜底：N 秒后再补一次画质请求');
-      requestTargetQuality('reunlock-after-trial');
-      startQualityDropWatcher();
-    }, CONFIG.RE_UNLOCK_DELAY);
-  };
+    /* 3-3 点击试用按钮 + 画质切换 + 兜底拔高 */
+    const QUALITY_MAP = { 1080: 80, 720: 64, 480: 32, 360: 16 };
+    const TARGET_QUALITY = () => QUALITY_MAP[options.preferQuality] || 80;
 
-  // 路径 C-2：周期性检测画质掉落，掉回低画质自动拔高（与 player 事件监听互补）
-  const startQualityDropWatcher = () => {
-    if (!options.enableReUnlockGuard) return;
-    if (qualityDropWatcherStarted) return;
-    qualityDropWatcherStarted = true;
+    let qualityDropWatcherStarted = false;
+    let reUnlockTimerId = null;
 
-    // 周期轮询兜底，覆盖 player 不发事件或事件被吞的情况
-    originSetInterval.call(unsafeWindow, () => {
+    const requestTargetQuality = (reason = 'manual') => {
+      const target = TARGET_QUALITY();
       try {
-        const cur = unsafeWindow.player?.getCurrentQuality?.();
-        const supported = unsafeWindow.player?.getSupportedQualityList?.();
-        const target = TARGET_QUALITY();
-        if (cur != null && supported?.includes(target) && cur !== target) {
-          console.log('[Bilibili脚本] 画质掉落检测:', cur, '->', target);
-          requestTargetQuality('drop-watch');
+        if (unsafeWindow.player?.getSupportedQualityList?.()?.includes(target)) {
+          Promise.resolve(unsafeWindow.player.requestQuality(target)).then(() => {
+            console.log('[Bilibili脚本] 画质请求成功:', target, '来源:', reason);
+          }).catch((err) => {
+            if (!String(err?.message || err).includes('Same as current quality')) {
+              console.warn('[Bilibili脚本] 画质切换失败:', err, '来源:', reason);
+            }
+          });
+          return true;
         }
       } catch (err) {
-        // 静默：getCurrentQuality 偶发不可用时不应刷屏
+        console.warn('[Bilibili脚本] 画质切换失败:', err, '来源:', reason);
       }
-    }, CONFIG.RE_UNLOCK_INTERVAL);
+      return false;
+    };
 
-    // 监听播放器画质变化事件，一旦降到目标之外则即时拔高（无需等下一轮轮询）
-    try {
-      const player = unsafeWindow.player;
-      const media = player?.mediaElement?.();
-      if (media && typeof media.addEventListener === 'function') {
-        media.addEventListener('media_qualitychange' in media ? 'media_qualitychange' : 'qualitychange', () => {
-          try {
-            const cur = player?.getCurrentQuality?.();
-            const target = TARGET_QUALITY();
-            if (cur != null && cur !== target) {
-              console.log('[Bilibili脚本] 监听到画质变化事件:', cur, '->', target);
-              requestTargetQuality('qualitychange-event');
-            }
-          } catch (err) { /* 静默 */ }
-        });
-      }
-    } catch (err) { /* 静默 */ }
-  };
-
-  // 使用 MutationObserver 而不是 setInterval 来监听按钮出现，性能更好
-  const observeTrialButton = () => {
-    const observer = new MutationObserver((mutations) => {
-      const btn = document.querySelector('.bpx-player-toast-confirm-login');
-      if (!btn) return;
-      
-      // 防抖：避免重复点击
-      if (btn.dataset.clicked) return;
-      btn.dataset.clicked = 'true';
-      
-      setTimeout(() => {
-        btn.click();
-        // 兜底立即启动：不依赖 toast 是否出现，覆盖 B 站没弹 toast 或 emit 失败的情况
-        scheduleReUnlockAfterTrial();
+    // 试用后再补一次画质请求
+    const scheduleReUnlockAfterTrial = () => {
+      requestTargetQuality('reunlock-immediate');
+      startQualityDropWatcher();
+      if (reUnlockTimerId) clearTimeout(reUnlockTimerId);
+      reUnlockTimerId = originSetTimeout.call(unsafeWindow, () => {
+        requestTargetQuality('reunlock-after-trial');
         startQualityDropWatcher();
+      }, CONFIG.RE_UNLOCK_DELAY);
+    };
+
+    // 画质掉回低时自动拔高
+    const startQualityDropWatcher = () => {
+      if (qualityDropWatcherStarted) return;
+      qualityDropWatcherStarted = true;
+
+      originSetInterval.call(unsafeWindow, () => {
+        try {
+          const cur = unsafeWindow.player?.getCurrentQuality?.();
+          const supported = unsafeWindow.player?.getSupportedQualityList?.();
+          const target = TARGET_QUALITY();
+          if (cur != null && supported?.includes(target) && cur !== target) {
+            console.log('[Bilibili脚本] 画质掉落检测:', cur, '->', target);
+            requestTargetQuality('drop-watch');
+          }
+        } catch (err) { /* 静默 */ }
+      }, CONFIG.RE_UNLOCK_INTERVAL);
+
+      try {
+        const player = unsafeWindow.player;
+        const media = player?.mediaElement?.();
+        if (media && typeof media.addEventListener === 'function') {
+          media.addEventListener('media_qualitychange' in media ? 'media_qualitychange' : 'qualitychange', () => {
+            try {
+              const cur = player?.getCurrentQuality?.();
+              const target = TARGET_QUALITY();
+              if (cur != null && cur !== target) {
+                console.log('[Bilibili脚本] 监听到画质变化事件:', cur, '->', target);
+                requestTargetQuality('qualitychange-event');
+              }
+            } catch (err) { /* 静默 */ }
+          });
+        }
+      } catch (err) { /* 静默 */ }
+    };
+
+    // 使用 MutationObserver 而不是 setInterval 来监听按钮出现，性能更好
+    const observeTrialButton = () => {
+      const observer = new MutationObserver((mutations) => {
+        const btn = document.querySelector('.bpx-player-toast-confirm-login');
+        if (!btn) return;
         
-        /* 可选：暂停→切画质→继续播放 */
-        if (options.isWaitUntilHighQualityLoaded && unsafeWindow.player?.mediaElement) {
-          const media = unsafeWindow.player.mediaElement();
-          const wasPlaying = !media.paused;
-          if (wasPlaying) {
-            unsafeWindow.__BFQ_ALLOW_INTERNAL_PAUSE__?.();
-            media.pause();
+        // 防抖：避免重复点击
+        if (btn.dataset.clicked) return;
+        btn.dataset.clicked = 'true';
+        
+        setTimeout(() => {
+          btn.click();
+          // 兜底立即启动：不依赖 toast 是否出现，覆盖 B 站没弹 toast 或 emit 失败的情况
+          scheduleReUnlockAfterTrial();
+          startQualityDropWatcher();
+          
+          /* 可选：暂停→切画质→继续播放 */
+          if (options.isWaitUntilHighQualityLoaded && unsafeWindow.player?.mediaElement) {
+            const media = unsafeWindow.player.mediaElement();
+            const wasPlaying = !media.paused;
+            if (wasPlaying) {
+              unsafeWindow.__BFQ_ALLOW_INTERNAL_PAUSE__?.();
+              media.pause();
+            }
+
+            const checkToast = setInterval(() => {
+              const toastTexts = document.querySelectorAll('.bpx-player-toast-text');
+              if ([...toastTexts].some(el => el.textContent.endsWith('试用中'))) {
+                if (wasPlaying) media.play().catch(err => console.warn('[Bilibili脚本] 播放失败:', err));
+                clearInterval(checkToast);
+                requestTargetQuality('trial-toast-detected');
+              }
+            }, CONFIG.TOAST_CHECK_INTERVAL);
+            
+            // 超时保护：最多等待10秒
+            setTimeout(() => clearInterval(checkToast), 10000);
           }
 
-          const checkToast = setInterval(() => {
-            const toastTexts = document.querySelectorAll('.bpx-player-toast-text');
-            if ([...toastTexts].some(el => el.textContent.endsWith('试用中'))) {
-              if (wasPlaying) media.play().catch(err => console.warn('[Bilibili脚本] 播放失败:', err));
-              clearInterval(checkToast);
-              // 试用中 toast 出现 = 二次确认解锁成功，再拔高一次
-              requestTargetQuality('trial-toast-detected');
-            }
-          }, CONFIG.TOAST_CHECK_INTERVAL);
+          /* 画质切换 */
+          setTimeout(() => {
+            requestTargetQuality('trial-button');
+          }, CONFIG.QUALITY_SWITCH_DELAY);
           
-          // 超时保护：最多等待10秒
-          setTimeout(() => clearInterval(checkToast), 10000);
-        }
+          // 重置点击标记
+          setTimeout(() => delete btn.dataset.clicked, 2000);
+        }, CONFIG.BUTTON_CLICK_DELAY);
+      });
 
-        /* 画质切换 */
-        setTimeout(() => {
-          requestTargetQuality('trial-button');
-        }, CONFIG.QUALITY_SWITCH_DELAY);
-        
-        // 重置点击标记
-        setTimeout(() => delete btn.dataset.clicked, 2000);
-      }, CONFIG.BUTTON_CLICK_DELAY);
-    });
-
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true
+      });
+    };
+    
+    // 等待 DOM 加载完成后启动观察器
+    if (document.body) {
+      observeTrialButton();
+    } else {
+      document.addEventListener('DOMContentLoaded', observeTrialButton);
+    }
   };
-  
-  // 等待 DOM 加载完成后启动观察器
-  if (document.body) {
-    observeTrialButton();
-  } else {
-    document.addEventListener('DOMContentLoaded', observeTrialButton);
+
+  if (!options.enableProtocolUnlock) {
+    installClientArchFallback();
   }
 
   /* ========== 4. 设置面板 ========== */
@@ -1588,10 +1724,10 @@ select:hover{border-color:#00aeec}
         <span class="switch" data-key="enableLiveAreaUnlock" data-status="${options.enableLiveAreaUnlock ? 'on' : 'off'}"></span>
       </div>
       <div class="qp-section-divider"></div>
-      <div class="qp-title">🛡️ 解锁兜底</div>
+      <div class="qp-title">🛡️ 解锁模式</div>
       <div class="qp-row">
-        <span class="qp-label">试用后自动续命画质</span>
-        <span class="switch" data-key="enableReUnlockGuard" data-status="${options.enableReUnlockGuard ? 'on' : 'off'}"></span>
+        <span class="qp-label">协议级解锁（推荐·无副作用）</span>
+        <span class="switch" data-key="enableProtocolUnlock" data-status="${options.enableProtocolUnlock ? 'on' : 'off'}"></span>
       </div>
       <button class="qp-close-btn" onclick="this.parentElement.parentElement.style.display='none'">✓ 保存并关闭</button>
     </div>`;
@@ -1669,8 +1805,8 @@ select:hover{border-color:#00aeec}
           options.enableReplyPagination = isOn;
         } else if (key === 'enableLiveAreaUnlock') {
           options.enableLiveAreaUnlock = isOn;
-        } else if (key === 'enableReUnlockGuard') {
-          options.enableReUnlockGuard = isOn;
+        } else if (key === 'enableProtocolUnlock') {
+          options.enableProtocolUnlock = isOn;
         }
         
         GM_setValue(key, isOn);
