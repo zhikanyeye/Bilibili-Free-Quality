@@ -2,7 +2,7 @@
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
 // @version      4.0.0-alpha.2
-// @description  v4.0 alpha.2：协议级解锁为主路（fetch+XHR双链+try_look兜底），旧客户端架构仅v4关闭时启用
+// @description  🎬 B 站未登录解放脚本 | 协议级拦截 playurl 直接拿 1080P 全片流，不走客户端试用倒计时 · 彻底屏蔽登录弹窗与平台自动暂停 · WBI 签名自调评论 API，视频/动态/专栏评论完整解锁 · 直播分区接口兜底，下拉不再卡加载 · 可视化面板可切 1080/720/480/360P · fetch + XHR 双链拦截 + try_look 失败兜底 · 旧客户端架构保留可一键回退
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
