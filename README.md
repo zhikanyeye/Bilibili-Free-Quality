@@ -1,7 +1,7 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Version](https://img.shields.io/badge/version-3.5.5-green)
+![Version](https://img.shields.io/badge/version-3.5.6-green)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 
 ## 📌 简介
@@ -83,6 +83,12 @@
 8. 直播分区接口异常时，将 `/xlive/web-interface/v1/second/getList` 兜底到 `/room/v3/area/getRoomList` 并转换数据结构
 
 ## 🔄 更新日志
+
+### v3.5.6 (2026-07-18)
+- 🐛 **缓解**：窄化 `Object.defineProperty` 对 `isViewToday`/`isVideoAble` 的劫持范围，避免误伤顶栏/搜索栏组件初始化链
+  - 现仅当目标对象疑似 player state 时才替换（带 player 上下文线索的 accessor、非 Element/Window、非 data descriptor）
+  - 这是治标方案，长期将改协议级解锁（v4.0）彻底解决家族遗传 bug
+- 📌 **说明**：参考 beefreely 项目（https://github.com/vruses/beefreely）做法，v4.0 将改为拦截 `/x/player/wbi/playurl` 协议层，移除 `setTimeout`/`setInterval` 全局劫持
 
 ### v3.5.5 (2026-07-18)
 - 🐛 **修复**：试用结束后第二次解锁失效问题——B 站试用倒计时被延长后不再弹按钮，原 MutationObserver 监听失效

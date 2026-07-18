@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      3.5.5
-// @description  v3.5.5：修复试用结束掉回360P、二次解锁失效、生活区直播列表显示不全三处问题
+// @version      3.5.6
+// @description  v3.5.6：窄化 Object.defineProperty 劫持范围，缓解顶栏/搜索栏消失；长期将改协议级解锁（v4.0）
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -1330,11 +1330,35 @@
   })();
 
   /* ========== 3. 无限试用核心 ========== */
-  /* 3-1 放行试用标识 */
+  /* 3-1 放行试用标识：窄化劫持范围，避免误伤顶栏/搜索框初始化链
+   * v3.5.6：只劫持带 play/player 上下文的对象，避免顶栏组件初始化时的同名属性被误改
+   */
   const originDef = Object.defineProperty;
+  let definePropertyCallCount = 0;
   Object.defineProperty = function (obj, prop, desc) {
     if (prop === 'isViewToday' || prop === 'isVideoAble') {
-      desc = { get: () => true, enumerable: false, configurable: true };
+      // 排除明显不是 player state 的对象，避免误伤：
+      // - 全局/窗口/Document/Element 这些通常是 UI 组件初始化上下文
+      // - desc 是 data descriptor（value+writable）而非 accessor 时，通常不是 player state
+      let isLikelyPlayerState = true;
+      try {
+        if (obj === globalThis || obj === unsafeWindow || obj === window) isLikelyPlayerState = false;
+        else if (obj instanceof Element) isLikelyPlayerState = false;
+        else if (desc && 'value' in desc && !('get' in desc) && !('set' in desc)) isLikelyPlayerState = false;
+        else if (desc && typeof desc.get === 'function') {
+          // 进一步检查 getter 函数体是否包含 player 状态相关 hint
+          const getterText = String(desc.get);
+          if (!/play|trial|view|able|quality|qn/i.test(getterText)) {
+            // 没有 player 上下文线索的 accessor，也可能是 UI 组件的 computed 属性，跳过
+            isLikelyPlayerState = false;
+          }
+        }
+      } catch (e) { isLikelyPlayerState = false; }
+
+      definePropertyCallCount++;
+      if (isLikelyPlayerState) {
+        desc = { get: () => true, enumerable: false, configurable: true };
+      }
     }
     return originDef.call(this, obj, prop, desc);
   };
