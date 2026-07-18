@@ -98,18 +98,14 @@
     return document.cookie.includes('DedeUserID__ckMd5=') && /\S/.test(document.cookie.match(/DedeUserID__ckMd5=([^;]+)/)?.[1] || '');
   }
 
-  // 协议级解锁前置：向 .bilibili.com 注入伪造 DedeUserID cookie，
-  // 让服务端在所有后续 playurl / player 请求中按登录态响应（直接出 1080P）。
-  // DedeUserID__ckMd5 是带签名校验的真实登录标记，不可伪造；仅 DedeUserID 可用于"看上去登录"。
-  // 为避免和 isBilibiliLoggedIn 的判定冲突，本脚本使用独立的 ckMd5 检查。
+  // 注入伪造 DedeUserID 让服务端按登录态响应。ckMd5 带签名不可伪造，故 isBilibiliLoggedIn 校验它。
   function ensureFakeLoginCookie() {
     if (document.cookie.match(/DedeUserID__ckMd5=([^;]+)/)?.[1]) return;
     const fakeUid = String(Math.floor(Math.random() * 1e10));
     document.cookie = `DedeUserID=${fakeUid}; path=/; domain=.bilibili.com`;
   }
 
-  // 拦截推荐流 rcmd，每次请求前清掉 buvid3，避免 B 站基于 buvid3 跟踪触发登录要求弹窗。
-  // 思路来自 DD1969 的同名脚本（首页防登录），并泛化到所有 @match 页面。
+  // 拦 top/feed/rcmd 前清 buvid3，避免 B 站按游客跟踪触发登录弹窗（DD1969 思路）
   let rcmdGuardInstalled = false;
   function installRcmdLoginGuard() {
     if (rcmdGuardInstalled || isBilibiliLoggedIn()) return;
@@ -125,8 +121,7 @@
     };
   }
 
-  // 清空 SSR 注入的 __playinfo__，强制播放器走 fetch/XHR 链拿 playurl。
-  // 用赋值而非 defineProperty，避免 SPA 切换页面时 descriptor 残留导致顶栏渲染链被破坏。
+  // 直接赋值替代 defineProperty，避免 descriptor 残留破坏 SPA 二次加载顶栏
   function clearPlayinfoSSR() {
     try {
       if (unsafeWindow.__playinfo__ !== undefined) unsafeWindow.__playinfo__ = null;
@@ -483,8 +478,7 @@
   const PROTOCOL_UNLOCK_TARGET_QN = 80;
   let playurlUnlockInstalled = false;
 
-  // 回写 __playinfo__，让播放器初值就读到解锁后的高清数据。
-  // 用赋值而非 defineProperty，避免 SPA 切换页面时 descriptor 残留导致顶栏渲染链被破坏。
+  // 用赋值替代 defineProperty，避免 descriptor 残留破坏 SPA 二次加载顶栏
   function writePlayinfo(json) {
     try {
       if (!json || json.code !== 0) return;
@@ -507,11 +501,7 @@
     xhr.dispatchEvent(new Event('loadend'));
   }
 
-  // v2 登录态改写：协议级模式下已注入伪造 DedeUserID cookie，
-  // 服务端在 /x/player/wbi/v2 自然按登录态返回 login_mid/level_info/need_login_subtitle，
-  // 无需在 fetch/XHR 层手动改写 response。原 patchPlayerWbiV2 实现（new Response 重建）
-  // 会破坏 body 一次性消费特性，影响播放器后续 .text()/.arrayBuffer() 二次读取。
-  // 若后续发现 player UI 仍按未登录渲染，再回退到改写方案。
+  // v2 已由注入伪造 DedeUserID 让服务端按登录态返回，无需手动改写。友好的 Body 一次性消费若被 New Response 重建会破坏顶栏渲染链，故已删除手动 patch 实现。
 
   async function buildPlayurlUrl(rawUrl, useTryLook = true) {
     const url = new URL(rawUrl, location.href);
@@ -573,7 +563,6 @@
 
           const urlWithTryLook = await buildPlayurlUrl(rawUrl, true);
           const input1 = input instanceof Request ? new Request(urlWithTryLook, input) : urlWithTryLook;
-          console.log('[Bilibili脚本] playurl 协议级解锁命中 qn=' + PROTOCOL_UNLOCK_TARGET_QN + ' try_look=1');
           const res1 = await originFetch(input1, init);
           const json1 = await parseFetchResponseJson(res1);
           if (!isTrialOnlyPlayurl(json1)) {
@@ -623,7 +612,6 @@
           }
 
           const finalUrl = await buildPlayurlUrl(rawUrl, true);
-          console.log('[Bilibili脚本] XHR playurl 解锁命中');
           const res = await fetch(finalUrl, { credentials: 'omit' });
           const json = await res.json();
 
@@ -1247,11 +1235,7 @@
     }, 1500);
   }
 
-  /* 2-0 从源头拦截 miniLogin.js 注入（参考 DD1969 v1.3）
-   * B 站通过动态 appendChild 加载 miniLogin 脚本来生成登录弹窗 + 部分顶栏 cookie 校验，
-   * 窄化命中条件：tagName === 'SCRIPT' && src.includes('miniLogin')，不动其他元素，
-   * 不会误伤顶栏 header 组件初始化链。
-   * 必须最早跑（document-start 阶段就在装），晚于 miniLogin 实际加载就拦不住了。 */
+  // DD1969 风格从源头拦截 miniLogin 脚本，窄化命中 SCRIPT+src.includes('miniLogin')，不误伤顶栏组件
   let miniLoginBlocked = false;
   function installMiniLoginGuard() {
     if (miniLoginBlocked) return;
@@ -1285,9 +1269,7 @@
 
   /* ========== 2. 阻止登录弹窗 / 自动暂停 ========== */
 
-  /* 2-1 登录遮罩 / 弹窗选择器 */
-  // miniLogin 脚本已由 installMiniLoginGuard 在最早期拦截（参考 DD1969），
-  // 这里仅作为 MutationObserver 兜底，处理仍漏出的弹窗 DOM 层（如 SSR 里硬编码的）。
+  /* 2-1 登录遮罩 / 弹窗选择器（miniLogin 脚本已被拦，此处仅 MutationObserver 兜底）*/
   const LOGIN_MASK_SELECTOR = [
     '.bili-mini-mask',
     '.bili-mini-login-mask',
@@ -1309,54 +1291,26 @@
     '.login-tip'
   ].join(',');
 
-  /* 2-2 CSS 保护顶部导航栏，确保工具栏/搜索栏始终可见可交互 */
+  /* 2-2 CSS：顶栏保持最高层级，登录层隐藏 */
   GM_addStyle(`
-    /* 顶部导航区域始终保持最高层级 */
-    .bili-header,
-    #bili-header-container,
-    .bili-header__bar,
-    #biliMainHeader,
-    .fixed-header {
-      position: relative !important;
-      z-index: 100001 !important;
-      pointer-events: auto !important;
-      visibility: visible !important;
-      opacity: 1 !important;
+    .bili-header, #bili-header-container, .bili-header__bar, #biliMainHeader, .fixed-header {
+      position: relative !important; z-index: 100001 !important;
+      pointer-events: auto !important; visibility: visible !important; opacity: 1 !important;
     }
-    .bili-header .center-search-container,
-    .bili-header .nav-search,
-    .bili-header .nav-search-input,
-    .bili-header .search-panel,
-    .bili-header .search-panel-popover {
-      position: relative !important;
-      z-index: 100002 !important;
-      pointer-events: auto !important;
-      visibility: visible !important;
-      opacity: 1 !important;
+    .bili-header .center-search-container, .bili-header .nav-search, .bili-header .nav-search-input,
+    .bili-header .search-panel, .bili-header .search-panel-popover {
+      position: relative !important; z-index: 100002 !important;
+      pointer-events: auto !important; visibility: visible !important; opacity: 1 !important;
     }
-    /* 只全局隐藏明确的遮罩；登录弹窗由 JS 判断是否真正在遮挡页面后再隐藏，避免误伤顶部工具栏。 */
-    .bili-mini-mask,
-    .bili-mini-login-mask,
-    .mini-login-mask,
-    .bili-login-v2-mask {
-      display: none !important;
-      pointer-events: none !important;
-      opacity: 0 !important;
-      visibility: hidden !important;
-    }
-    body > .bili-mini-login,
-    body > .mini-login,
-    body > .bili-login-v2-container,
-    body > .passport-login-pop,
-    body > .passport-login-container {
-      display: none !important;
-      pointer-events: none !important;
-      opacity: 0 !important;
-      visibility: hidden !important;
+    .bili-mini-mask, .bili-mini-login-mask, .mini-login-mask, .bili-login-v2-mask,
+    body > .bili-mini-login, body > .mini-login, body > .bili-login-v2-container,
+    body > .passport-login-pop, body > .passport-login-container {
+      display: none !important; pointer-events: none !important;
+      opacity: 0 !important; visibility: hidden !important;
     }
   `);
 
-  /* 2-3 DOM 级别隐藏：处理动态插入的登录弹窗 */
+  // 2-3 兜底：DOM MutationObserver 处理仍漏出的弹窗
   const hideElement = (el) => {
     if (!el || el.nodeType !== 1) return;
     el.style.setProperty('display', 'none', 'important');
@@ -1384,14 +1338,10 @@
 
   const hideLoginLayersInNode = (node) => {
     if (!node || node.nodeType !== 1) return;
-
-    // 全局级登录遮罩 / 弹窗：只隐藏真正遮挡视口的登录层，避免误伤头部工具栏组件。
     if (isViewportLoginLayer(node)) hideElement(node);
     node.querySelectorAll?.(`${LOGIN_MASK_SELECTOR},${LOGIN_POPUP_SELECTOR}`)?.forEach((el) => {
       if (isViewportLoginLayer(el)) hideElement(el);
     });
-
-    // 播放器内部登录提示 —— 仅隐藏播放器区域内的
     const isInPlayer = (el) => !!el.closest(
       '.bpx-player-container, .bpx-player-video-area, .bpx-player-video-wrap, #bilibili-player'
     );
@@ -1401,7 +1351,6 @@
     });
   };
 
-  // 初始扫描
   if (document.documentElement) hideLoginLayersInNode(document.documentElement);
 
   const startLoginLayerGuard = () => {
@@ -1624,9 +1573,7 @@
       const target = TARGET_QUALITY();
       try {
         if (unsafeWindow.player?.getSupportedQualityList?.()?.includes(target)) {
-          Promise.resolve(unsafeWindow.player.requestQuality(target)).then(() => {
-            console.log('[Bilibili脚本] 画质请求成功:', target, '来源:', reason);
-          }).catch((err) => {
+          Promise.resolve(unsafeWindow.player.requestQuality(target)).catch((err) => {
             if (!String(err?.message || err).includes('Same as current quality')) {
               console.warn('[Bilibili脚本] 画质切换失败:', err, '来源:', reason);
             }
@@ -1661,10 +1608,9 @@
           const supported = unsafeWindow.player?.getSupportedQualityList?.();
           const target = TARGET_QUALITY();
           if (cur != null && supported?.includes(target) && cur !== target) {
-            console.log('[Bilibili脚本] 画质掉落检测:', cur, '->', target);
             requestTargetQuality('drop-watch');
           }
-        } catch (err) { /* 静默 */ }
+        } catch (err) {}
       }, CONFIG.RE_UNLOCK_INTERVAL);
 
       try {
@@ -1675,33 +1621,26 @@
             try {
               const cur = player?.getCurrentQuality?.();
               const target = TARGET_QUALITY();
-              if (cur != null && cur !== target) {
-                console.log('[Bilibili脚本] 监听到画质变化事件:', cur, '->', target);
-                requestTargetQuality('qualitychange-event');
-              }
-            } catch (err) { /* 静默 */ }
+              if (cur != null && cur !== target) requestTargetQuality('qualitychange-event');
+            } catch (err) {}
           });
         }
-      } catch (err) { /* 静默 */ }
+      } catch (err) {}
     };
 
     // 使用 MutationObserver 而不是 setInterval 来监听按钮出现，性能更好
     const observeTrialButton = () => {
-      const observer = new MutationObserver((mutations) => {
+      const observer = new MutationObserver(() => {
         const btn = document.querySelector('.bpx-player-toast-confirm-login');
         if (!btn) return;
-        
-        // 防抖：避免重复点击
         if (btn.dataset.clicked) return;
         btn.dataset.clicked = 'true';
-        
+
         setTimeout(() => {
           btn.click();
-          // 兜底立即启动：不依赖 toast 是否出现，覆盖 B 站没弹 toast 或 emit 失败的情况
           scheduleReUnlockAfterTrial();
           startQualityDropWatcher();
-          
-          /* 可选：暂停→切画质→继续播放 */
+
           if (options.isWaitUntilHighQualityLoaded && unsafeWindow.player?.mediaElement) {
             const media = unsafeWindow.player.mediaElement();
             const wasPlaying = !media.paused;
@@ -1709,42 +1648,27 @@
               unsafeWindow.__BFQ_ALLOW_INTERNAL_PAUSE__?.();
               media.pause();
             }
-
             const checkToast = setInterval(() => {
               const toastTexts = document.querySelectorAll('.bpx-player-toast-text');
               if ([...toastTexts].some(el => el.textContent.endsWith('试用中'))) {
-                if (wasPlaying) media.play().catch(err => console.warn('[Bilibili脚本] 播放失败:', err));
+                if (wasPlaying) media.play().catch(() => {});
                 clearInterval(checkToast);
                 requestTargetQuality('trial-toast-detected');
               }
             }, CONFIG.TOAST_CHECK_INTERVAL);
-            
-            // 超时保护：最多等待10秒
             setTimeout(() => clearInterval(checkToast), 10000);
           }
 
-          /* 画质切换 */
-          setTimeout(() => {
-            requestTargetQuality('trial-button');
-          }, CONFIG.QUALITY_SWITCH_DELAY);
-          
-          // 重置点击标记
+          setTimeout(() => requestTargetQuality('trial-button'), CONFIG.QUALITY_SWITCH_DELAY);
           setTimeout(() => delete btn.dataset.clicked, 2000);
         }, CONFIG.BUTTON_CLICK_DELAY);
       });
 
-      observer.observe(document.body, {
-        childList: true,
-        subtree: true
-      });
+      observer.observe(document.body, { childList: true, subtree: true });
     };
-    
-    // 等待 DOM 加载完成后启动观察器
-    if (document.body) {
-      observeTrialButton();
-    } else {
-      document.addEventListener('DOMContentLoaded', observeTrialButton);
-    }
+
+    if (document.body) observeTrialButton();
+    else document.addEventListener('DOMContentLoaded', observeTrialButton);
   };
 
   if (!options.enableProtocolUnlock) {
@@ -1824,8 +1748,7 @@ select:hover{border-color:#00aeec}
 
   /* 注册 GM 菜单 & 播放器入口 */
   GM_registerMenuCommand('🎬 画质设置', () => (panel.style.display = 'flex'));
-  
-  // 使用 MutationObserver 而不是 setInterval 来添加设置入口
+
   let entryAdded = false;
   const addSettingsEntry = () => {
     if (entryAdded) return;
@@ -1843,7 +1766,6 @@ select:hover{border-color:#00aeec}
     entryAdded = true;
   };
   
-  // 监听设置面板的出现
   const settingsObserver = new MutationObserver(() => {
     if (!entryAdded) addSettingsEntry();
   });
@@ -1875,8 +1797,7 @@ select:hover{border-color:#00aeec}
         el.dataset.status = newStatus;
         const isOn = newStatus === 'on';
         const key = el.dataset.key;
-        
-        // 更新对应的选项
+
         if (key === 'isWaitUntilHighQualityLoaded') {
           options.isWaitUntilHighQualityLoaded = isOn;
         } else if (key === 'enableCommentUnlock') {
