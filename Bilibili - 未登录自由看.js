@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      3.5.4
-// @description  v3.5.4：修复试用高清画质时视频页顶部工具栏加载异常的问题
+// @version      4.0.0-alpha.1
+// @description  v4.0 alpha：协议级画质解锁（拦截 playurl 改 qn=80+try_look=1 重签），旧客户端架构暂时保留作为兜底
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -387,6 +387,65 @@
         has_more: hasMore,
         vajra: oldData.vajra || [],
         cover_source: oldData.cover_source || 0
+      }
+    };
+  }
+
+  /* ========== v4.0 协议级画质解锁（第一刀：仅拦截 fetch 改请求）==========
+   * 参考 beefreely（https://github.com/vruses/beefreely）做法：
+   *   拦截 /x/player/wbi/playurl，把参数改为 qn=80(1080P)+try_look=1，删 w_rid/wts 后重算 WBI 签名
+   *   服务端就出 1080P 流，前端 __playinfo__ 自动拿到正确数据
+   * 不动 Object.defineProperty、不改 setTimeout/setInterval → 不再有顶栏/搜索栏消失副作用
+   * 本第一刀**仅新增**，不删除旧客户端架构；旧架构保留作为兜底，后续版本逐步清理。
+   */
+  const PROTOCOL_UNLOCK_TARGET_QN = 80; // 1080P；如需更高画质可调这里
+  let playurlFetchPatched = false;
+
+  function installPlayurlUnlock() {
+    if (!PAGE_RE.video.test(location.href) && !PAGE_RE.festival.test(location.href) && !PAGE_RE.list.test(location.href)) return;
+    if (isBilibiliLoggedIn()) return;
+    if (playurlFetchPatched) return;
+    playurlFetchPatched = true;
+
+    const originFetch = unsafeWindow.fetch?.bind(unsafeWindow);
+    if (!originFetch) return;
+
+    unsafeWindow.fetch = async function(input, init) {
+      let rawUrl = typeof input === 'string' ? input : (input?.url ?? '');
+      if (!rawUrl || !rawUrl.includes('/x/player/wbi/playurl')) {
+        return originFetch(input, init);
+      }
+
+      try {
+        const url = new URL(rawUrl, location.href);
+        if (url.hostname.indexOf('api.bilibili.com') === -1 && url.hostname.indexOf('api.bilibili.com') !== 0) {
+          // 非 bilibili 域名直接透传
+          return originFetch(input, init);
+        }
+        // 重建参数：删旧签名，加 qn=80 + try_look=1，再 WBI 签
+        const params = {};
+        for (const [k, v] of url.searchParams.entries()) {
+          if (k === 'w_rid' || k === 'wts') continue;
+          params[k] = v;
+        }
+        params.qn = String(PROTOCOL_UNLOCK_TARGET_QN);
+        params.try_look = '1';
+
+        const signedQuery = await getWbiQueryString(params);
+        const newUrl = `${url.origin}${url.pathname}?${signedQuery}`;
+
+        // 如果 input 是 Request，构造新 Request；否则用字符串
+        let newInput;
+        if (input instanceof Request) {
+          newInput = new Request(newUrl, input);
+        } else {
+          newInput = newUrl;
+        }
+        console.log('[Bilibili脚本][v4] playurl 协议级解锁命中，参数已改为 qn=' + PROTOCOL_UNLOCK_TARGET_QN + ' try_look=1');
+        return originFetch(newInput, init);
+      } catch (e) {
+        console.warn('[Bilibili脚本][v4] playurl 协议级解锁失败，回退原始请求:', e);
+        return originFetch(input, init);
       }
     };
   }
@@ -993,6 +1052,7 @@
   }
 
   installLiveAreaUnlock();
+  installPlayurlUnlock();
   setupDynamicCommentBtnModifier();
 
   /* ========== 初始化评论模块（无论是否登录都执行） ========== */
