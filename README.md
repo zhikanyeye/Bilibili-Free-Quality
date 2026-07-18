@@ -1,12 +1,19 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Version](https://img.shields.io/badge/version-4.0.0--alpha.2-orange)
+![Version](https://img.shields.io/badge/version-4.0.0--alpha.4-orange)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 
 ## 📌 简介
 
 **「Bilibili - 未登录自由看」** 让未登录用户也能轻松观看高画质B站视频，并补齐评论、动态、专栏与直播分区在未登录状态下的常见限制。
+
+**v4.0 起** 采用 **协议级 + 客户端兼容** 双模式架构，默认走协议级解锁、保留旧客户端架构作为一键回退兜底：
+
+| 模式 | 实现方式 | 副作用 |
+|---|---|---|
+| **协议级解锁**（v4 默认）| 伪造 `DedeUserID` cookie + 清空 `__playinfo__` SSR + 重签 WBI `playurl`（`try_look=1` + `qn=80`）+ 改写 `player/wbi/v2` 登录态，**服务端直接出 1080P 全片流** | 无顶栏/搜索栏消失、无 30 秒截断 |
+| **客户端兼容**（一键回退）| 延长试用倒计时 + 自动点击试用按钮 + 画质兜底拔高 + 窄化 `Object.defineProperty` 劫持 | 沿用 v3.5.6 修复，仅作为兜底 |
 
 您是否也遇到这些烦恼？
 - 未登录只能看 360P？
@@ -18,14 +25,15 @@
 
 ### 核心功能
 
-- ✅ **无限次**自动触发 1080P 试用，**不限时长**
+- ✅ **协议级 1080P 全片流**：伪造登录态 cookie + WBI 重签 playurl，服务端直接返回 1080P，无试用倒计时截断
+- ✅ **客户端兼容兜底**：关闭协议级解锁即回退旧的试用倒计时延长 + 按钮自动点击 + 画质兜底拔高三重防护
 - ✅ **彻底屏蔽**登录弹窗与自动暂停
 - ✅ **真正可用的评论解锁**：自调 B站 API（含 WBI 签名），绕开官方评论组件
 - ✅ **视频 / 动态 / 专栏评论**：支持未登录查看；直播间与空间动态的评论入口会跳转到动态详情页查看
 - ✅ **分页 / 无限滚动**两种评论加载模式可切换，分页模式支持输入页码跳转
 - ✅ **直播分区连续加载**：未登录下拉分区列表时自动兜底旧接口，避免一直卡在加载中
 - ✅ **尊重自动播放设置**：防暂停逻辑只在已开始播放后恢复，不再强制初始自动播放
-- ✅ **可视化面板**，一键切换 1080P / 720P / 480P / 360P
+- ✅ **可视化面板**，一键切换 1080P / 720P / 480P / 360P，并可切换解锁模式
 - ✅ **Edge / Chrome / Firefox** 全平台兼容
 - ✅ **零配置**，安装即用；已登录用户自动退出，零干扰
 
@@ -45,6 +53,7 @@
 ## 🛠️ 自定义设置
 
 - **首选画质**：1080p / 720p / 480p / 360p
+- **🛡️ 解锁模式**：协议级解锁（推荐·无副作用，默认）/ 客户端兼容（关闭即回退旧架构兜底）
 - **切换时暂停**：开 / 关（防止音画不同步）
 - **解锁全部评论**：开 / 关（视频、动态、专栏页自调 API 渲染评论）
 - **分页加载评论**：开 / 关（开启后支持上一页、下一页和输入页码跳转；关闭则使用无限滚动模式）
@@ -71,18 +80,46 @@
 
 ## 💡 工作原理
 
-本脚本通过以下机制实现功能：
+本脚本采用 **协议级 + 客户端兼容** 双模式架构：
+
+### 协议级解锁（v4 默认，推荐）
+
+1. **伪造登录态 cookie**：向 `.bilibili.com` 注入 `DedeUserID`，让服务端在所有后续 API 请求中按登录用户响应
+2. **清空 `__playinfo__` SSR**：赋 `null` + 注入 `window.playurlSSRData={}`，强制播放器走 fetch/XHR 链拿 playurl（拦截链才能命中）
+3. **拦截 `/x/player/wbi/playurl`**：删除原 `w_rid`/`wts`，重设 `qn=80(1080P)` + `try_look=1`，用本地 WBI 算法重签；fetch 与 XHR 双链拦截，try_look 失败自动去 try_look 重试一次
+4. **拦截 `/x/player/wbi/v2`**：改写 `login_mid`/`level_info`/`need_login_subtitle`，让播放器 UI 按登录态渲染
+5. **回写 `__playinfo__`**：把拦截到的高清 playurl 响应赋回全局，播放器初值即读到 1080P 数据
+
+### 客户端兼容模式（兜底，关闭协议级解锁时启用）
 
 1. 拦截和修改B站的API请求与响应
 2. 阻止登录提示弹窗的DOM元素加载
 3. 覆盖原生视频控制函数，防止平台自动暂停，同时保留用户主动暂停和站内自动播放设置
 4. 自动触发高清画质试用，并移除时间限制
-5. 直接调用 B站评论 API（`/x/v2/reply/wbi/main`），实现完整 WBI 签名，绕开官方评论组件
-6. 动态详情通过 `x/polymer/web-dynamic/v1/detail` 获取评论目标；专栏使用专栏评论类型直接加载
-7. 自建评论渲染逻辑，支持无限滚动、分页、页码跳转与子评论展开
-8. 直播分区接口异常时，将 `/xlive/web-interface/v1/second/getList` 兜底到 `/room/v3/area/getRoomList` 并转换数据结构
+5. 试用结束后 N 秒主动补一次画质请求（兜底路径 C-1）+ 周期性监听画质掉落（兜底路径 C-2）
+
+### 公共模块
+
+1. 直接调用 B站评论 API（`/x/v2/reply/wbi/main`），实现完整 WBI 签名，绕开官方评论组件
+2. 动态详情通过 `x/polymer/web-dynamic/v1/detail` 获取评论目标；专栏使用专栏评论类型直接加载
+3. 自建评论渲染逻辑，支持无限滚动、分页、页码跳转与子评论展开
+4. 直播分区接口异常时，将 `/xlive/web-interface/v1/second/getList` 兜底到 `/room/v3/area/getRoomList` 并转换数据结构
 
 ## 🔄 更新日志
+
+### v4.0.0-alpha.4 (2026-07-18)
+- 🐛 **修复**：切视频时顶栏消失——`__playinfo__` 用 `defineProperty` 锁定 descriptor，B 站 SPA 二次加载无法重新注入 SSR，连带波及顶栏渲染链
+  - `clearPlayinfoSSR` / `writePlayinfo` 改用直接赋值替代 `defineProperty`，descriptor 不再残留
+- 📝 **回归**：`@description` 改回双兼容描述：协议级 + 客户端兼容双重保护 + 旧客户端架构保留可一键回退
+- 📚 **README**：补齐 v4.0 双模式架构说明、更新自定义设置与工作原理
+
+### v4.0.0-alpha.3 (2026-07-18)
+- 🐛 **根因修复**：对照 [beefreely](https://github.com/vruses/beefreely) 源码重新排查，补齐 alpha.2 缺失的四要素，1080P 真正生效
+  - `ensureFakeLoginCookie`：注入伪造 `DedeUserID` 到 `.bilibili.com`，服务端按登录态出 1080P
+  - `isBilibiliLoggedIn`：改严格校验 `DedeUserID__ckMd5`（带签名），区分真登录与伪造
+  - `clearPlayinfoSSR`：清空 SSR 注入的 `__playinfo__` + `playurlSSRData`，拦截链才能命中
+  - `patchPlayerWbiV2` / `installPlayerInfoUnlock`：改写 `/x/player/wbi/v2` 的 `login_mid`/`level_info`/`need_login_subtitle`
+  - `writePlayinfo`：把解锁后高清响应回写 `__playinfo__`
 
 ### v4.0.0-alpha.2 (2026-07-18)
 - 🚧 **新增**：XHR 链路 playurl 拦截，覆盖老播放器或某些走 XHR 的页面
