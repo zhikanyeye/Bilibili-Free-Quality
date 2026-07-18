@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      4.0.0-alpha.3
-// @description  🎬 B 站未登录解放脚本 | 伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）+ 改写 player/wbi/v2 登录态，服务端直接出 1080P 全片流 · 彻底屏蔽登录弹窗与平台自动暂停 · WBI 签名自调评论 API，视频/动态/专栏评论完整解锁 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · fetch + XHR 双链拦截 + try_look 失败兜底 · 旧客户端架构保留可一键回退
+// @version      4.0.0-alpha.4
+// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）+ 改写 player/wbi/v2 登录态，服务端直接出 1080P 全片流；客户端兼容模式自动试用画质 + 拦截画质劫持，fallback 兜底拔高 · 彻底屏蔽登录弹窗与平台自动暂停 · WBI 签名自调评论 API，视频/动态/专栏评论完整解锁 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 旧客户端架构保留可一键回退
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -108,10 +108,11 @@
     document.cookie = `DedeUserID=${fakeUid}; path=/; domain=.bilibili.com`;
   }
 
-  // 清空播放器 SSR 注入的 __playinfo__，强制播放器走 fetch/XHR 链拿 playurl（拦截链才能命中）。
+  // 清空 SSR 注入的 __playinfo__，强制播放器走 fetch/XHR 链拿 playurl。
+  // 用赋值而非 defineProperty，避免 SPA 切换页面时 descriptor 残留导致顶栏渲染链被破坏。
   function clearPlayinfoSSR() {
     try {
-      Object.defineProperty(unsafeWindow, '__playinfo__', { get: () => null, configurable: true });
+      if (unsafeWindow.__playinfo__ !== undefined) unsafeWindow.__playinfo__ = null;
       const s = document.createElement('script');
       s.textContent = 'window.playurlSSRData = {}';
       document.documentElement.appendChild(s);
@@ -465,14 +466,12 @@
   const PROTOCOL_UNLOCK_TARGET_QN = 80;
   let playurlUnlockInstalled = false;
 
-  // 回写 __playinfo__，让播放器初值就读到解锁后的高清数据
+  // 回写 __playinfo__，让播放器初值就读到解锁后的高清数据。
+  // 用赋值而非 defineProperty，避免 SPA 切换页面时 descriptor 残留导致顶栏渲染链被破坏。
   function writePlayinfo(json) {
     try {
       if (!json || json.code !== 0) return;
-      Object.defineProperty(unsafeWindow, '__playinfo__', {
-        get: () => json,
-        configurable: true,
-      });
+      unsafeWindow.__playinfo__ = json;
     } catch (e) {}
   }
 
