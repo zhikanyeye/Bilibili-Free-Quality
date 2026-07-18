@@ -1,7 +1,7 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Version](https://img.shields.io/badge/version-4.0.0--alpha.5-orange)
+![Version](https://img.shields.io/badge/version-4.0.0--alpha.6-orange)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 
 ## 📌 简介
@@ -106,6 +106,14 @@
 4. 直播分区接口异常时，将 `/xlive/web-interface/v1/second/getList` 兜底到 `/room/v3/area/getRoomList` 并转换数据结构
 
 ## 🔄 更新日志
+
+### v4.0.0-alpha.6 (2026-07-18)
+- 🐛 **根因修复**：视频页导航栏消失——`patchPlayerWbiV2` 用 `new Response(text, …)` 重建会破坏 body 一次性消费特性，影响播放器后续 `.text()/.arrayBuffer()` 二次读取，连带波及顶栏渲染链
+  - 直接删除 `patchPlayerWbiV2` 和 `installPlayerInfoUnlock`：协议级模式注入伪造 DedeUserID 后，服务端在 `/x/player/wbi/v2` 自然按登录态返回 `login_mid/level_info/need_login_subtitle`，无需在 fetch/XHR 层手动改写
+- 🛡️ **新增**：参考 DD1969 v1.3 思路从源头拦截 `miniLogin` 脚本，窄化命中 `tagName==='SCRIPT' && src.includes('miniLogin')`，不误伤顶栏渲染链
+  - 提早到 `isBilibiliLoggedIn return` 之前装载，document-start 阶段即生效
+  - DOM MutationObserver 仅作兜底处理硬编码漏出
+- 📚 **README**：版本 badge → alpha.6
 
 ### v4.0.0-alpha.5 (2026-07-18)
 - 🛡️ **新增**：吸收 DD1969「首页防登录」脚本思路——拦截 `top/feed/rcmd` 推荐流，每次请求前清掉 `buvid3`，避免 B 站基于游客 buvid3 跟踪触发登录弹窗

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      4.0.0-alpha.5
-// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）+ 改写 player/wbi/v2 登录态，服务端直接出 1080P 全片流；客户端兼容模式自动试用画质 + 拦截画质劫持，fallback 兜底拔高 · 拦截 rcmd 推荐流清 buvid3 防登录弹窗 · 彻底屏蔽登录弹窗与平台自动暂停 · WBI 签名自调评论 API，视频/动态/专栏评论完整解锁 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 旧客户端架构保留可一键回退
+// @version      4.0.0-alpha.6
+// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P；客户端兼容模式自动试用画质 + 拦截画质劫持，fallback 兜底拔高 · DD1969 风格从源头拦截 miniLogin 脚本 + 拦 rcmd 清 buvid3 防登录弹窗 · 彻底屏蔽自动暂停 · WBI 签名自调评论 API，视频/动态/专栏评论完整解锁 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -507,60 +507,11 @@
     xhr.dispatchEvent(new Event('loadend'));
   }
 
-  // 修改 /x/player/wbi/v2 响应，让播放器 UI 按登录态渲染
-  async function patchPlayerWbiV2(input, init, originFetch) {
-    try {
-      const res = await originFetch(input, init);
-      const json = await res.clone().json().catch(() => null);
-      if (json && json.code === 0 && json.data) {
-        json.data.login_mid = Math.floor(Math.random() * 100000);
-        if ('need_login_subtitle' in json.data) json.data.need_login_subtitle = false;
-        if (json.data.level_info) json.data.level_info.current_level = 6;
-        const text = JSON.stringify(json);
-        return new Response(text, {
-          status: res.status,
-          statusText: res.statusText,
-          headers: res.headers,
-        });
-      }
-      return res;
-    } catch (e) {
-      return originFetch(input, init);
-    }
-  }
-
-  function installPlayerInfoUnlock() {
-    const XHR = unsafeWindow.XMLHttpRequest;
-    if (!XHR || XHR.prototype.__bfqPlayerPatched) return;
-    XHR.prototype.__bfqPlayerPatched = true;
-    const originOpen = XHR.prototype.open;
-    const originSend = XHR.prototype.send;
-    XHR.prototype.open = function(method, url, ...rest) {
-      this.__bfqPlayerUrl = typeof url === 'string' ? url : '';
-      return originOpen.call(this, method, url, ...rest);
-    };
-    XHR.prototype.send = function(...args) {
-      const u = this.__bfqPlayerUrl;
-      if (!u || !u.includes('/x/player/wbi/v2')) {
-        return originSend.apply(this, args);
-      }
-      const xhr = this;
-      (async () => {
-        try {
-          const res = await fetch(u, { credentials: 'omit' });
-          const json = await res.json().catch(() => null);
-          if (json && json.code === 0 && json.data) {
-            json.data.login_mid = Math.floor(Math.random() * 100000);
-            if ('need_login_subtitle' in json.data) json.data.need_login_subtitle = false;
-            if (json.data.level_info) json.data.level_info.current_level = 6;
-          }
-          emitXhrFakeResponse(xhr, json || {});
-        } catch (e) {
-          originSend.apply(xhr, args);
-        }
-      })();
-    };
-  }
+  // v2 登录态改写：协议级模式下已注入伪造 DedeUserID cookie，
+  // 服务端在 /x/player/wbi/v2 自然按登录态返回 login_mid/level_info/need_login_subtitle，
+  // 无需在 fetch/XHR 层手动改写 response。原 patchPlayerWbiV2 实现（new Response 重建）
+  // 会破坏 body 一次性消费特性，影响播放器后续 .text()/.arrayBuffer() 二次读取。
+  // 若后续发现 player UI 仍按未登录渲染，再回退到改写方案。
 
   async function buildPlayurlUrl(rawUrl, useTryLook = true) {
     const url = new URL(rawUrl, location.href);
@@ -605,17 +556,12 @@
 
     ensureFakeLoginCookie();
     clearPlayinfoSSR();
-    installPlayerInfoUnlock();
 
     /* ---- fetch 链 ---- */
     const originFetch = unsafeWindow.fetch?.bind(unsafeWindow);
     if (originFetch) {
       unsafeWindow.fetch = async function(input, init) {
         let rawUrl = typeof input === 'string' ? input : (input?.url ?? '');
-
-        if (rawUrl && rawUrl.includes('/x/player/wbi/v2')) {
-          return patchPlayerWbiV2(input, init, originFetch);
-        }
 
         if (!rawUrl || !rawUrl.includes('/x/player/wbi/playurl')) {
           return originFetch(input, init);
@@ -1301,6 +1247,27 @@
     }, 1500);
   }
 
+  /* 2-0 从源头拦截 miniLogin.js 注入（参考 DD1969 v1.3）
+   * B 站通过动态 appendChild 加载 miniLogin 脚本来生成登录弹窗 + 部分顶栏 cookie 校验，
+   * 窄化命中条件：tagName === 'SCRIPT' && src.includes('miniLogin')，不动其他元素，
+   * 不会误伤顶栏 header 组件初始化链。
+   * 必须最早跑（document-start 阶段就在装），晚于 miniLogin 实际加载就拦不住了。 */
+  let miniLoginBlocked = false;
+  function installMiniLoginGuard() {
+    if (miniLoginBlocked) return;
+    miniLoginBlocked = true;
+    const originAppendChild = Node.prototype.appendChild;
+    Node.prototype.appendChild = function (childElement) {
+      if (childElement && childElement.tagName === 'SCRIPT' && typeof childElement.src === 'string' && childElement.src.includes('miniLogin')) {
+        return null;
+      }
+      return originAppendChild.call(this, childElement);
+    };
+  }
+
+  /* ========== 1. 已登录退出 + 主模块安装 ========== */
+
+  installMiniLoginGuard();
   installRcmdLoginGuard();
   installLiveAreaUnlock();
   installPlayurlUnlock();
@@ -1319,7 +1286,8 @@
   /* ========== 2. 阻止登录弹窗 / 自动暂停 ========== */
 
   /* 2-1 登录遮罩 / 弹窗选择器 */
-  // miniLogin 相关脚本也可能参与顶部工具栏渲染，不能从源头拦截脚本加载，只清理实际遮挡页面的登录层。
+  // miniLogin 脚本已由 installMiniLoginGuard 在最早期拦截（参考 DD1969），
+  // 这里仅作为 MutationObserver 兜底，处理仍漏出的弹窗 DOM 层（如 SSR 里硬编码的）。
   const LOGIN_MASK_SELECTOR = [
     '.bili-mini-mask',
     '.bili-mini-login-mask',
