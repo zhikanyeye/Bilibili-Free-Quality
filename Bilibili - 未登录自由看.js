@@ -37,7 +37,7 @@
     CLICK_TIMEOUT: 800,
     AUTO_RESUME_INTERVAL: 1200,
     TRIAL_TIMEOUT: 3e8,
-    // v3.5.5 兜底拔高（fallback 内使用）
+    // 兜底拔高配置（fallback 内使用）
     RE_UNLOCK_DELAY: 5000,
     RE_UNLOCK_INTERVAL: 3000
   };
@@ -48,8 +48,7 @@
     enableCommentUnlock: GM_getValue('enableCommentUnlock', true),
     enableReplyPagination: GM_getValue('enableReplyPagination', false),
     enableLiveAreaUnlock: GM_getValue('enableLiveAreaUnlock', true),
-    // v4 协议级解锁主开关：开（默认）→ playurl 协议级解锁生效，旧客户端架构（试用倒计时延长/按钮自动点击/兜底拔高）停用
-    enableProtocolUnlock: GM_getValue('enableProtocolUnlock', true)
+    enableProtocolUnlock: GM_getValue('enableProtocolUnlock', true)  // false 时回退旧客户端架构
   };
 
   const PAGE_RE = {
@@ -441,23 +440,10 @@
     };
   }
 
-  /* ========== v4.0 协议级画质解锁（alpha.2：fetch + XHR 双链拦截，try_look 失败兜底）==========
-   * 参考 beefreely（https://github.com/vruses/beefreely）做法：
-   *   拦截 /x/player/wbi/playurl，把参数改为 qn=80(1080P)+try_look=1，删 w_rid/wts 后重算 WBI 签名
-   *   服务端就出 1080P 流，前端 __playinfo__ 自动拿到正确数据
-   * 不动 Object.defineProperty、不改 setTimeout/setInterval → 不再有顶栏/搜索栏消失副作用
-   *
-   * alpha.2 综合 DD1969 原脚本思路：
-   *   - 新增 XHR 链路拦截，覆盖老播放器或某些页面 XHR 请求
-   *   - try_look=1 失败（仍只给试看片段）时自动去掉 try_look 仅保留 qn=80 重试一次
-   *   - 新增 enableProtocolUnlock 开关：开（默认）走协议级；关时旧客户端架构兜底启用
-   *
-   * 注意：为最小风险，本版**不删除旧客户端架构函数定义**，仅通过开关控制是否安装旧架构的劫持。
-   */
-  const PROTOCOL_UNLOCK_TARGET_QN = 80; // 1080P；如需更高画质可调这里
+  /* ========== 协议级画质解锁（拦截 playurl，服务端直接出 1080P）========== */
+  const PROTOCOL_UNLOCK_TARGET_QN = 80;
   let playurlUnlockInstalled = false;
 
-  // 公共：重建 playurl URL（删 w_rid/wts，改 qn，可选 try_look）
   async function buildPlayurlUrl(rawUrl, useTryLook = true) {
     const url = new URL(rawUrl, location.href);
     const params = {};
@@ -471,17 +457,13 @@
     return `${url.origin}${url.pathname}?${signedQuery}`;
   }
 
-  // 判断 playurl 响应是否仍只给试看片段（未登录未解锁场景）
   function isTrialOnlyPlayurl(json) {
     try {
       if (!json || json.code !== 0) return false;
       const data = json.data || {};
-      // B 站试看时，dash video 时长通常 30s；也有 video_fragment 或 login 字段提示
-      // 简易判定：若包含 login/need_login 提示，或 dash 数组极短
       if (data.isPreview === 1 || data.preview === 1) return true;
       if (typeof data.need_login === 'number' && data.need_login === 1) return true;
       if (data.dash && Array.isArray(data.dash.video) && data.dash.video.length > 0) {
-        // dash 流若所有片段 duration ≤ 60s 且 quality 最高 ≤ 32（480p），大概率是试看
         const maxQ = Math.max(...data.dash.video.map(v => v.id || 0));
         if (maxQ <= 32) return true;
       }
@@ -489,7 +471,6 @@
     } catch (e) { return false; }
   }
 
-  // 解析 fetch Response 的 JSON（容错）
   async function parseFetchResponseJson(res) {
     try {
       return await res.clone().json();
@@ -517,23 +498,21 @@
           const url = new URL(rawUrl, location.href);
           if (url.hostname !== 'api.bilibili.com') return originFetch(input, init);
 
-          // 第一路：try_look=1 + qn=80
           const urlWithTryLook = await buildPlayurlUrl(rawUrl, true);
           const input1 = input instanceof Request ? new Request(urlWithTryLook, input) : urlWithTryLook;
-          console.log('[Bilibili脚本][v4] playurl 协议级解锁命中，参数已改为 qn=' + PROTOCOL_UNLOCK_TARGET_QN + ' try_look=1');
+          console.log('[Bilibili脚本] playurl 协议级解锁命中 qn=' + PROTOCOL_UNLOCK_TARGET_QN + ' try_look=1');
           const res1 = await originFetch(input1, init);
           const json1 = await parseFetchResponseJson(res1);
           if (!isTrialOnlyPlayurl(json1)) {
             return res1;
           }
 
-          // 兜底：try_look 失败，去掉 try_look 仅保留 qn=80 重试一次
-          console.warn('[Bilibili脚本][v4] try_look=1 仍只给试看，重试不带 try_look 仅 qn=' + PROTOCOL_UNLOCK_TARGET_QN);
+          console.warn('[Bilibili脚本] try_look=1 仍给试看，重试仅 qn=' + PROTOCOL_UNLOCK_TARGET_QN);
           const urlNoTryLook = await buildPlayurlUrl(rawUrl, false);
           const input2 = input instanceof Request ? new Request(urlNoTryLook, input) : urlNoTryLook;
           return originFetch(input2, init);
         } catch (e) {
-          console.warn('[Bilibili脚本][v4] playurl 协议级解锁失败，回退原始请求:', e);
+          console.warn('[Bilibili脚本] playurl 解锁失败，回退:', e);
           return originFetch(input, init);
         }
       };
@@ -558,7 +537,6 @@
         return originSend.apply(this, args);
       }
 
-      // XHR 路径无法同步重签，改为：拦下 send，改为 fetch 重签请求，然后伪造 XHR 响应
       const xhr = this;
       (async () => {
         try {
@@ -568,12 +546,12 @@
           }
 
           const finalUrl = await buildPlayurlUrl(rawUrl, true);
-          console.log('[Bilibili脚本][v4] XHR playurl 协议级解锁命中');
+          console.log('[Bilibili脚本] XHR playurl 解锁命中');
           const res = await fetch(finalUrl, { credentials: 'omit' });
           const json = await res.json();
 
           if (isTrialOnlyPlayurl(json)) {
-            console.warn('[Bilibili脚本][v4] XHR try_look=1 仍只给试看，重试不带 try_look');
+            console.warn('[Bilibili脚本] XHR try_look=1 仍给试看，重试');
             const fallbackUrl = await buildPlayurlUrl(rawUrl, false);
             const res2 = await fetch(fallbackUrl, { credentials: 'omit' });
             const json2 = await res2.json();
@@ -582,7 +560,7 @@
           }
           emitXhrFakeResponse(xhr, json);
         } catch (e) {
-          console.warn('[Bilibili脚本][v4] XHR playurl 协议级解锁失败，回退原生 send:', e);
+          console.warn('[Bilibili脚本] XHR playurl 解锁失败:', e);
           originSend.apply(xhr, args);
         }
       })();
@@ -1498,14 +1476,8 @@
     });
   })();
 
-  /* ========== 3. 无限试用核心（旧客户端架构，v4 协议级解锁开启时跳过）==========
-   * 旧客户端架构通过 Object.defineProperty 全局劫持 + setTimeout/setInterval 延迟试用倒计时，
-   * 存在「顶栏/搜索栏消失」「试用结束掉回 360P」等副作用。
-   * v4 协议级解锁默认开启时，本节所有劫持一律不安装，从根上消除副作用。
-   * 仅当用户手动关闭「协议级解锁」开关，本节才作为兜底启用。
-   */
+  /* ========== 客户端兜底（关闭协议级解锁时启用）========== */
   const installClientArchFallback = () => {
-    /* 3-1 放行试用标识：窄化劫持范围，避免误伤顶栏/搜索框初始化链（v3.5.6） */
     const originDef = Object.defineProperty;
     let definePropertyCallCount = 0;
     Object.defineProperty = function (obj, prop, desc) {
@@ -1531,7 +1503,7 @@
       return originDef.call(this, obj, prop, desc);
     };
 
-    /* 3-2 把试用倒计时延长到 3 亿秒 */
+    /* 3-2 试用倒计时延长到 3 亿秒 */
     const originSetTimeout = unsafeWindow.setTimeout;
     const originSetInterval = unsafeWindow.setInterval;
     const shouldExtendTrialTimer = (fn, delayNum) => {
@@ -1561,14 +1533,13 @@
       return originSetInterval.call(unsafeWindow, fn, delay);
     };
 
-    /* 3-3 自动点击试用按钮 + 画质切换 + 兜底拔高（吸收 v3.5.5）*/
+    /* 3-3 点击试用按钮 + 画质切换 + 兜底拔高 */
     const QUALITY_MAP = { 1080: 80, 720: 64, 480: 32, 360: 16 };
     const TARGET_QUALITY = () => QUALITY_MAP[options.preferQuality] || 80;
 
     let qualityDropWatcherStarted = false;
     let reUnlockTimerId = null;
 
-    // 公共：请求目标画质（按钮触发路与兜底路复用）
     const requestTargetQuality = (reason = 'manual') => {
       const target = TARGET_QUALITY();
       try {
@@ -1588,19 +1559,18 @@
       return false;
     };
 
-    // 路径 C-1：试用结束后 N 秒主动补一次画质请求，启动时先立即拔高一次
+    // 试用后再补一次画质请求
     const scheduleReUnlockAfterTrial = () => {
       requestTargetQuality('reunlock-immediate');
       startQualityDropWatcher();
       if (reUnlockTimerId) clearTimeout(reUnlockTimerId);
       reUnlockTimerId = originSetTimeout.call(unsafeWindow, () => {
-        console.log('[Bilibili脚本] 试用结束兜底：N 秒后再补一次画质请求');
         requestTargetQuality('reunlock-after-trial');
         startQualityDropWatcher();
       }, CONFIG.RE_UNLOCK_DELAY);
     };
 
-    // 路径 C-2：周期性检测画质掉落，掉回低画质自动拔高 + player 画质变化事件监听
+    // 画质掉回低时自动拔高
     const startQualityDropWatcher = () => {
       if (qualityDropWatcherStarted) return;
       qualityDropWatcherStarted = true;
@@ -1697,7 +1667,6 @@
     }
   };
 
-  // v4 协议级解锁默认开启时，旧客户端架构跳过安装
   if (!options.enableProtocolUnlock) {
     installClientArchFallback();
   }
