@@ -2,7 +2,7 @@
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
 // @version      3.5.5
-// @description  v3.5.5：试用结束后主动续命画质解锁，新增画质掉落自动监听，修复二次解锁失效问题
+// @description  v3.5.5：修复试用结束掉回360P、二次解锁失效、生活区直播列表显示不全三处问题
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -38,7 +38,7 @@
     AUTO_RESUME_INTERVAL: 1200,
     TRIAL_TIMEOUT: 3e8,
     RE_UNLOCK_DELAY: 5000,
-    RE_UNLOCK_INTERVAL: 30000,
+    RE_UNLOCK_INTERVAL: 3000,
     QUALITY_DROP_WATCH_DELAY: 7000
   };
 
@@ -295,8 +295,42 @@
     if (!json || json.code !== 0) return false;
     const data = json.data || {};
     if (!Array.isArray(data.list)) return false;
-    if (data.list.length > 0) return true;
-    return requestInfo.page > 1 || ('has_more' in data && Number(data.has_more) === 0);
+
+    // case 1：空列表，仅在合理终态时视为可用
+    if (data.list.length === 0) {
+      return requestInfo.page > 1 || ('has_more' in data && Number(data.has_more) === 0);
+    }
+
+    // case 2：列表非空但明显被登录态裁剪——count 与 list 长度严重不匹配
+    // B 站新接口对未登录常返回「裁剪版」list（数据有但截短），原 page_size 通常 30
+    const count = Number(data.count || 0);
+    const pageSize = requestInfo.pageSize || 30;
+    const listLen = data.list.length;
+
+    // count 已知但当前页 list 远少于 page_size 且不是末页 → 疑似裁剪
+    if (count > 0 && listLen < pageSize) {
+      const expectedEndPage = Math.ceil(count / pageSize);
+      const isLastPage = requestInfo.page >= expectedEndPage;
+      if (!isLastPage) {
+        console.warn('[直播分区] 列表疑似被登录态裁剪，走兜底:', {
+          areaId: requestInfo.areaId, page: requestInfo.page, listLen, pageSize, count
+        });
+        return false;
+      }
+    }
+
+    // case 3：has_more 标记与 list 长度矛盾（has_more=0 但 list 满，或反过来）→ 可能裁剪
+    if ('has_more' in data) {
+      const hasMore = Number(data.has_more);
+      if (hasMore === 0 && listLen >= pageSize && count > requestInfo.page * pageSize) {
+        console.warn('[直播分区] has_more 标记与列表长度矛盾，走兜底:', {
+          areaId: requestInfo.areaId, page: requestInfo.page, listLen, pageSize, count, hasMore
+        });
+        return false;
+      }
+    }
+
+    return true;
   }
 
   function createLiveAreaJsonResponse(json, NativeResponse) {
@@ -372,7 +406,21 @@
     });
     const count = Number(oldData.count || 0);
     const pageSize = Math.max(requestInfo.pageSize || 30, list.length || 0, 1);
-    const hasMore = count ? (requestInfo.page * pageSize < count ? 1 : 0) : (list.length >= pageSize ? 1 : 0);
+    // 宁可多翻一页空也不提前停：count 已知时严格按 count 判；count 缺失时倾向 has_more=1，
+    // 让前端多翻一页验证，避免旧接口真实数据被误判为末页导致「显示不全」
+    let hasMore;
+    if (count > 0) {
+      hasMore = requestInfo.page * pageSize < count ? 1 : 0;
+    } else {
+      // count 缺失：list 满页视为可能有下一页，list 不满也可能是中间页（旧接口 count 字段未必准）
+      hasMore = list.length >= pageSize ? 1 : 0;
+      if (list.length > 0 && list.length < pageSize) {
+        console.warn('[直播分区] 旧接口返回不完整但 count 缺失，保守置有 has_more=1:', {
+          areaId: requestInfo.areaId, page: requestInfo.page, listLen: list.length, pageSize
+        });
+        hasMore = 1;
+      }
+    }
     return {
       code: 0,
       msg: json.msg || 'success',
@@ -1348,23 +1396,26 @@
     return false;
   };
 
-  // 路径 C-1：试用结束后 N 秒主动补一次画质请求
+  // 路径 C-1：试用结束后 N 秒主动补一次画质请求，启动时先立即拔高一次避免试用结束瞬间已掉回 360P
   const scheduleReUnlockAfterTrial = () => {
     if (!options.enableReUnlockGuard) return;
+    requestTargetQuality('reunlock-immediate');
+    startQualityDropWatcher();
     if (reUnlockTimerId) clearTimeout(reUnlockTimerId);
     reUnlockTimerId = originSetTimeout.call(unsafeWindow, () => {
-      console.log('[Bilibili脚本] 试用结束兜底：主动补一次画质请求');
+      console.log('[Bilibili脚本] 试用结束兜底：N 秒后再补一次画质请求');
       requestTargetQuality('reunlock-after-trial');
       startQualityDropWatcher();
     }, CONFIG.RE_UNLOCK_DELAY);
   };
 
-  // 路径 C-2：周期性检测画质掉落，掉回低画质自动拔高
+  // 路径 C-2：周期性检测画质掉落，掉回低画质自动拔高（与 player 事件监听互补）
   const startQualityDropWatcher = () => {
     if (!options.enableReUnlockGuard) return;
     if (qualityDropWatcherStarted) return;
     qualityDropWatcherStarted = true;
 
+    // 周期轮询兜底，覆盖 player 不发事件或事件被吞的情况
     originSetInterval.call(unsafeWindow, () => {
       try {
         const cur = unsafeWindow.player?.getCurrentQuality?.();
@@ -1378,6 +1429,24 @@
         // 静默：getCurrentQuality 偶发不可用时不应刷屏
       }
     }, CONFIG.RE_UNLOCK_INTERVAL);
+
+    // 监听播放器画质变化事件，一旦降到目标之外则即时拔高（无需等下一轮轮询）
+    try {
+      const player = unsafeWindow.player;
+      const media = player?.mediaElement?.();
+      if (media && typeof media.addEventListener === 'function') {
+        media.addEventListener('media_qualitychange' in media ? 'media_qualitychange' : 'qualitychange', () => {
+          try {
+            const cur = player?.getCurrentQuality?.();
+            const target = TARGET_QUALITY();
+            if (cur != null && cur !== target) {
+              console.log('[Bilibili脚本] 监听到画质变化事件:', cur, '->', target);
+              requestTargetQuality('qualitychange-event');
+            }
+          } catch (err) { /* 静默 */ }
+        });
+      }
+    } catch (err) { /* 静默 */ }
   };
 
   // 使用 MutationObserver 而不是 setInterval 来监听按钮出现，性能更好
@@ -1392,6 +1461,9 @@
       
       setTimeout(() => {
         btn.click();
+        // 兜底立即启动：不依赖 toast 是否出现，覆盖 B 站没弹 toast 或 emit 失败的情况
+        scheduleReUnlockAfterTrial();
+        startQualityDropWatcher();
         
         /* 可选：暂停→切画质→继续播放 */
         if (options.isWaitUntilHighQualityLoaded && unsafeWindow.player?.mediaElement) {
@@ -1407,9 +1479,8 @@
             if ([...toastTexts].some(el => el.textContent.endsWith('试用中'))) {
               if (wasPlaying) media.play().catch(err => console.warn('[Bilibili脚本] 播放失败:', err));
               clearInterval(checkToast);
-              // 试用中 toast 出现 = 首次解锁成功，挂上兜底
-              scheduleReUnlockAfterTrial();
-              startQualityDropWatcher();
+              // 试用中 toast 出现 = 二次确认解锁成功，再拔高一次
+              requestTargetQuality('trial-toast-detected');
             }
           }, CONFIG.TOAST_CHECK_INTERVAL);
           
@@ -1420,9 +1491,6 @@
         /* 画质切换 */
         setTimeout(() => {
           requestTargetQuality('trial-button');
-          // 即便未启用「切换时暂停」，也挂上兜底
-          scheduleReUnlockAfterTrial();
-          startQualityDropWatcher();
         }, CONFIG.QUALITY_SWITCH_DELAY);
         
         // 重置点击标记
