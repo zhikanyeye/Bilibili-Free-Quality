@@ -128,9 +128,11 @@
   // 吞掉 SSR 写入的低质 __playinfo__，只接受 writePlayinfo 写入的高清数据
   let _playinfoCache = null;
   let _playinfoWriteAllow = false;
+  let _playinfoKey = ''; // aid_cid，避免 SPA 切视频串流
   function clearPlayinfoSSR() {
     try {
       _playinfoCache = null;
+      _playinfoKey = '';
       Object.defineProperty(unsafeWindow, '__playinfo__', {
         get: () => _playinfoCache,
         set: (v) => { if (_playinfoWriteAllow) _playinfoCache = v; },
@@ -143,6 +145,51 @@
     } catch (e) {
       try { unsafeWindow.__playinfo__ = null; } catch (e2) {}
     }
+  }
+
+  function getPlayurlRequestKey(rawUrl) {
+    try {
+      const u = new URL(rawUrl, location.href);
+      const aid = u.searchParams.get('avid') || u.searchParams.get('aid') || '';
+      const cid = u.searchParams.get('cid') || '';
+      const bvid = u.searchParams.get('bvid') || '';
+      return `${bvid || aid}_${cid}`;
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function isPlayurlRequestUrl(rawUrl) {
+    if (!rawUrl) return false;
+    return rawUrl.includes('/x/player/wbi/playurl')
+      || rawUrl.includes('/x/player/playurl')
+      || rawUrl.includes('/pgc/player/web/playurl')
+      || rawUrl.includes('/pgc/player/web/v2/playurl');
+  }
+
+  // SPA 切视频时清空旧高清缓存，强制重新走 playurl 拦截
+  function installSpaPlayinfoReset() {
+    const reset = () => {
+      _playinfoCache = null;
+      _playinfoKey = '';
+      ensureFakeLoginCookie();
+    };
+    const wrapHistory = (type) => {
+      const origin = history[type];
+      if (typeof origin !== 'function' || origin.__bfqPatched) return;
+      const wrapped = function (...args) {
+        const ret = origin.apply(this, args);
+        reset();
+        return ret;
+      };
+      wrapped.__bfqPatched = true;
+      history[type] = wrapped;
+    };
+    try {
+      wrapHistory('pushState');
+      wrapHistory('replaceState');
+      window.addEventListener('popstate', reset);
+    } catch (e) {}
   }
 
   // 获取视频AID
@@ -554,9 +601,10 @@
   const PROTOCOL_UNLOCK_TARGET_QN = 80;
   let playurlUnlockInstalled = false;
 
-  function writePlayinfo(json) {
+  function writePlayinfo(json, requestKey = '') {
     try {
       if (!json || json.code !== 0) return;
+      if (requestKey) _playinfoKey = requestKey;
       _playinfoWriteAllow = true;
       _playinfoCache = json;
       try { unsafeWindow.__playinfo__ = json; } catch (e) {}
@@ -648,14 +696,22 @@
 
     ensureFakeLoginCookie();
     clearPlayinfoSSR();
+    installSpaPlayinfoReset();
+
+    const fetchPlayurlJson = async (rawUrl, useTryLook) => {
+      const signed = await buildPlayurlUrl(rawUrl, useTryLook);
+      const res = await nativePageFetch(signed, { credentials: 'include', method: 'GET' });
+      const json = await parseFetchResponseJson(res);
+      return { res, json };
+    };
 
     /* ---- fetch 链 ---- */
-    const originFetch = unsafeWindow.fetch?.bind(unsafeWindow);
+    const originFetch = unsafeWindow.fetch?.bind(unsafeWindow) || nativePageFetch;
     if (originFetch) {
       unsafeWindow.fetch = async function(input, init) {
         let rawUrl = typeof input === 'string' ? input : (input?.url ?? '');
 
-        if (!rawUrl || !rawUrl.includes('/x/player/wbi/playurl')) {
+        if (!isPlayurlRequestUrl(rawUrl)) {
           return originFetch(input, init);
         }
 
@@ -663,19 +719,17 @@
           const url = new URL(rawUrl, location.href);
           if (url.hostname !== 'api.bilibili.com') return originFetch(input, init);
 
-          const mergedInit = { ...(init || {}), credentials: 'include' };
-          if (input instanceof Request) {
-            try {
-              const headers = new Headers(input.headers || {});
-              mergedInit.headers = headers;
-            } catch (e) {}
+          const reqKey = getPlayurlRequestKey(rawUrl);
+          // 切到新 aid/cid 时先清旧缓存，防止串流
+          if (reqKey && _playinfoKey && reqKey !== _playinfoKey) {
+            _playinfoCache = null;
+            _playinfoKey = '';
           }
+          ensureFakeLoginCookie();
 
-          const urlWithTryLook = await buildPlayurlUrl(rawUrl, true);
-          const res1 = await originFetch(urlWithTryLook, mergedInit);
-          const json1 = await parseFetchResponseJson(res1);
+          let { json: json1 } = await fetchPlayurlJson(rawUrl, true);
           if (json1 && !isTrialOnlyPlayurl(json1)) {
-            writePlayinfo(json1);
+            writePlayinfo(json1, reqKey);
             return new Response(JSON.stringify(json1), {
               status: 200,
               statusText: 'OK',
@@ -684,10 +738,8 @@
           }
 
           console.warn('[Bilibili脚本] try_look=1 仍给试看，重试仅 qn=' + getTargetQn());
-          const urlNoTryLook = await buildPlayurlUrl(rawUrl, false);
-          const res2 = await originFetch(urlNoTryLook, mergedInit);
-          const json2 = await parseFetchResponseJson(res2);
-          if (json2) writePlayinfo(json2);
+          let { res: res2, json: json2 } = await fetchPlayurlJson(rawUrl, false);
+          if (json2) writePlayinfo(json2, reqKey);
           if (!json2) return res2;
           return new Response(JSON.stringify(json2), {
             status: 200,
@@ -717,7 +769,7 @@
 
     XHR.prototype.send = function(...args) {
       const rawUrl = this.__bfqPlayurlUrl;
-      if (!rawUrl || !rawUrl.includes('/x/player/wbi/playurl')) {
+      if (!isPlayurlRequestUrl(rawUrl)) {
         return originSend.apply(this, args);
       }
 
@@ -729,17 +781,19 @@
             return originSend.apply(xhr, args);
           }
 
-          const finalUrl = await buildPlayurlUrl(rawUrl, true);
-          let res = await nativePageFetch(finalUrl, { credentials: 'include', method: 'GET' });
-          let json = await res.json().catch(() => null);
+          const reqKey = getPlayurlRequestKey(rawUrl);
+          if (reqKey && _playinfoKey && reqKey !== _playinfoKey) {
+            _playinfoCache = null;
+            _playinfoKey = '';
+          }
+          ensureFakeLoginCookie();
 
+          let { json } = await fetchPlayurlJson(rawUrl, true);
           if (isTrialOnlyPlayurl(json)) {
             console.warn('[Bilibili脚本] XHR try_look=1 仍给试看，重试');
-            const fallbackUrl = await buildPlayurlUrl(rawUrl, false);
-            res = await nativePageFetch(fallbackUrl, { credentials: 'include', method: 'GET' });
-            json = await res.json().catch(() => null);
+            ({ json } = await fetchPlayurlJson(rawUrl, false));
           }
-          writePlayinfo(json);
+          writePlayinfo(json, reqKey);
           emitXhrFakeResponse(xhr, json || {});
         } catch (e) {
           console.warn('[Bilibili脚本] XHR playurl 解锁失败:', e);
