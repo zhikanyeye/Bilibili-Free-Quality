@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      4.0.0-alpha.12
-// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P，SPA 切视频检测 aid/cid 自动重签；客户端兼容模式自动试用画质 + 拦截画质劫持 · 拦 rcmd 清 buvid3 防登录弹窗 · 彻底屏蔽自动暂停 · 评论按 DD1969 方式只替换评论容器（不全站 hide，保护顶栏）· 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 无远程样式依赖
+// @version      4.0.0-alpha.13
+// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P，SPA 切视频检测 aid/cid 自动重签；客户端兼容模式自动试用画质 + 拦截画质劫持 · 拦 rcmd 清 buvid3 防登录弹窗 · 彻底屏蔽自动暂停 · 评论按 DD1969 方式只替换评论容器（不全站 hide，保护顶栏）· 播放器底部悬浮倍速按钮（借鉴 globalSpeed GhostMode 强制 playbackRate 生效）· 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 无远程样式依赖
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -50,7 +50,10 @@
     enableCommentUnlock: GM_getValue('enableCommentUnlock', true),
     enableReplyPagination: GM_getValue('enableReplyPagination', false),
     enableLiveAreaUnlock: GM_getValue('enableLiveAreaUnlock', true),
-    enableProtocolUnlock: GM_getValue('enableProtocolUnlock', true)  // false 时回退旧客户端架构
+    enableProtocolUnlock: GM_getValue('enableProtocolUnlock', true),  // false 时回退旧客户端架构
+    playbackRate: Number(GM_getValue('playbackRate', 1)) || 1,
+    customPlaybackRate: Number(GM_getValue('customPlaybackRate', 1.5)) || 1.5,
+    enablePlaybackRateControl: GM_getValue('enablePlaybackRateControl', true)
   };
 
   const PAGE_RE = {
@@ -2250,6 +2253,250 @@
   if (!options.enableProtocolUnlock) {
     installClientArchFallback();
   }
+
+
+  /* 倍速控制模块（参考 polywock/globalSpeed 的 GhostMode：原型级 playbackRate setter 拦截 + 校验回写，强制绕过站点自定义 setter）
+     MIT License, Copyright (c) polywock — 仅借鉴核心兼容机制，缩窄到 B 站 media 元素 */
+  function installPlaybackRateController() {
+    if (!options.enablePlaybackRateControl) return;
+    const isVideoPage = PAGE_RE.video.test(location.href) || PAGE_RE.festival.test(location.href) || PAGE_RE.list.test(location.href);
+    const isLivePage = PAGE_RE.live.test(location.href);
+
+    const proto = (unsafeWindow.HTMLMediaElement || HTMLMediaElement).prototype;
+    const ogDesc = Object.getOwnPropertyDescriptor(proto, 'playbackRate');
+    if (!ogDesc || !ogDesc.get || !ogDesc.set) return;
+    if (proto.__bfqRatePatched) return; // 与 globalSpeed 等共存：已 hook 过就不重复
+    proto.__bfqRatePatched = true;
+
+    const clipsTargetRate = new WeakMap();
+    const isBiliMedia = (el) => {
+      try { return el instanceof HTMLMediaElement; } catch (e) { return false; }
+    };
+
+    const applyRate = (el, rate) => {
+      if (!el || !isBiliMedia(el)) return false;
+      try {
+        ogDesc.set.call(el, rate);
+        if (Math.abs(ogDesc.get.call(el) - rate) > 0.001) ogDesc.set.call(el, rate);
+        clipsTargetRate.set(el, rate);
+        return Math.abs(ogDesc.get.call(el) - rate) < 0.001;
+      } catch (e) { return false; }
+    };
+
+    // 原型级覆盖 setter：站点后续 set 都会被记录并校正回来（借鉴 globalSpeed GhostMode）
+    Object.defineProperty(proto, 'playbackRate', {
+      configurable: true,
+      enumerable: true,
+      get() { return ogDesc.get.call(this); },
+      set(v) {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n <= 0) return ogDesc.set.call(this, v);
+        clipsTargetRate.set(this, n);
+        ogDesc.set.call(this, n);
+        if (Math.abs(ogDesc.get.call(this) - n) > 0.001) ogDesc.set.call(this, n);
+      },
+    });
+
+    const applyToAllMedia = () => {
+      if (options.playbackRate === 1) return;
+      document.querySelectorAll('video, audio').forEach(m => {
+        if (!isBiliMedia(m)) return;
+        const target = options.playbackRate;
+        const cur = ogDesc.get.call(m);
+        if (Math.abs(cur - target) > 0.001) applyRate(m, target);
+      });
+    };
+
+    let enforceTimer = null;
+    const mediaObserver = new MutationObserver(() => applyToAllMedia());
+    const startEnforce = () => {
+      if (enforceTimer) return;
+      enforceTimer = setInterval(applyToAllMedia, 1500);
+      if (isVideoPage || isLivePage) {
+        try { mediaObserver.observe(document.body, { childList: true, subtree: true }); } catch (e) {}
+      }
+    };
+    const stopEnforce = () => {
+      if (enforceTimer) { clearInterval(enforceTimer); enforceTimer = null; }
+      mediaObserver.disconnect();
+    };
+    if (options.playbackRate !== 1) startEnforce();
+
+    document.addEventListener('ratechange', (e) => {
+      const m = e.target;
+      if (!isBiliMedia(m)) return;
+      const target = clipsTargetRate.get(m) || options.playbackRate;
+      if (!target || target === 1) return;
+      const cur = ogDesc.get.call(m);
+      if (Math.abs(cur - target) > 0.001) ogDesc.set.call(m, target);
+    }, true);
+
+    /* ===== 悬浮按钮（播放器底部右侧） ===== */
+    GM_addStyle(`
+#bfq-speed-btn{position:absolute;right:148px;bottom:48px;z-index:1000;display:flex;align-items:center;gap:4px;padding:0 10px;height:36px;border-radius:18px;background:rgba(0,0,0,.5);color:#fff;cursor:pointer;font-size:13px;user-select:none;transition:background .2s;backdrop-filter:blur(2px)}
+#bfq-speed-btn:hover{background:rgba(0,0,0,.7)}
+#bfq-speed-btn .bfq-speed-label{font-weight:600;letter-spacing:.5px}
+#bfq-speed-btn .bfq-speed-chev{font-size:10px;opacity:.7;margin-left:2px}
+.bfq-speed-pop{position:absolute;bottom:88px;right:148px;z-index:1001;min-width:160px;padding:8px 0;background:#fff;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.25);font-family:sans-serif;display:none}
+.bfq-speed-pop.show{display:block}
+.bfq-speed-pop .bfq-row{padding:8px 14px;font-size:14px;color:#333;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+.bfq-speed-pop .bfq-row:hover{background:#f4f5f7}
+.bfq-speed-pop .bfq-row.active{color:#00aeec;font-weight:700}
+.bfq-speed-pop .bfq-row.active::after{content:'✓';color:#00aeec}
+.bfq-speed-pop .bfq-divider{height:1px;background:#eee;margin:4px 0}
+.bfq-speed-pop .bfq-custom{padding:8px 14px}
+.bfq-speed-pop .bfq-custom-label{font-size:12px;color:#666;margin-bottom:6px}
+.bfq-speed-pop .bfq-custom-row{display:flex;gap:6px}
+.bfq-speed-pop .bfq-custom-row input{flex:1;width:60px;padding:4px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px;outline:none}
+.bfq-speed-pop .bfq-custom-row input:focus{border-color:#00aeec}
+.bfq-speed-pop .bfq-custom-row button{padding:4px 10px;background:#00aeec;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px}
+.bfq-speed-pop .bfq-custom-row button:hover{background:#0098d1}
+.bfq-speed-pop .bfq-toggle{padding:8px 14px;font-size:12px;color:#666;border-top:1px solid #eee;display:flex;justify-content:space-between;align-items:center;cursor:pointer}
+.bfq-speed-pop .bfq-toggle:hover{background:#f4f5f7}
+.bfq-speed-pop .bfq-toggle .bfq-mini-switch{width:32px;height:18px;background:#ccc;border-radius:9px;position:relative;transition:background .2s}
+.bfq-speed-pop .bfq-toggle .bfq-mini-switch.on{background:#00aeec}
+.bfq-speed-pop .bfq-toggle .bfq-mini-switch::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;background:#fff;border-radius:50%;transition:left .2s}
+.bfq-speed-pop .bfq-toggle .bfq-mini-switch.on::after{left:16px}
+    `);
+
+    const SPEED_PRESETS = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3];
+    const fmtRate = (n) => {
+      const r = Number(n);
+      if (Number.isInteger(r)) return `${r}x`;
+      return `${r.toFixed(2).replace(/0$/, '')}x`;
+    };
+
+    const findPlayer = () => {
+      return document.querySelector('.bpx-player-container') ||
+        document.querySelector('.bilibili-player-video-wrap')?.closest('.bilibili-player') ||
+        null;
+    };
+
+    let btnEl = null;
+    let popEl = null;
+
+    const refreshBtnLabel = () => {
+      if (btnEl) btnEl.querySelector('.bfq-speed-label').textContent = `▶ ${fmtRate(options.playbackRate)}`;
+    };
+
+    const refreshPop = () => {
+      if (!popEl) return;
+      const customActive = SPEED_PRESETS.every(s => Math.abs(s - options.playbackRate) >= 0.001);
+      const presetRows = SPEED_PRESETS.map(s => {
+        const active = Math.abs(s - options.playbackRate) < 0.001 ? 'active' : '';
+        return `<div class="bfq-row ${active}" data-rate="${s}">${fmtRate(s)}</div>`;
+      }).join('');
+      popEl.innerHTML = `
+        ${presetRows}
+        <div class="bfq-divider"></div>
+        <div class="bfq-row ${customActive ? 'active' : ''}" data-rate="custom">自定义 ${fmtRate(options.customPlaybackRate)}</div>
+        <div class="bfq-custom">
+          <div class="bfq-custom-label">输入自定义倍速 (0.07-16)</div>
+          <div class="bfq-custom-row">
+            <input type="number" min="0.07" max="16" step="0.05" value="${options.customPlaybackRate}" />
+            <button>应用</button>
+          </div>
+        </div>
+        <div class="bfq-divider"></div>
+        <div class="bfq-toggle" data-toggle="enable">
+          <span>启用倍速强制</span>
+          <span class="bfq-mini-switch ${options.enablePlaybackRateControl ? 'on' : ''}"></span>
+        </div>`;
+    };
+
+    const setRate = (rate) => {
+      let r = Number(rate);
+      if (!Number.isFinite(r)) return;
+      r = Math.max(0.07, Math.min(16, r));
+      options.playbackRate = r;
+      GM_setValue('playbackRate', r);
+      applyToAllMedia();
+      refreshBtnLabel();
+      refreshPop();
+      if (r !== 1) startEnforce(); else stopEnforce();
+      console.log('[Bilibili脚本] 倍速设置为', r);
+    };
+
+    const onPopClick = (e) => {
+      const row = e.target.closest?.('.bfq-row');
+      if (row) {
+        if (row.dataset.rate === 'custom') setRate(options.customPlaybackRate);
+        else setRate(Number(row.dataset.rate));
+        return;
+      }
+      const applyBtn = e.target.closest?.('button');
+      if (applyBtn) {
+        const input = popEl.querySelector('input');
+        const v = Number(input.value);
+        if (Number.isFinite(v) && v > 0) {
+          options.customPlaybackRate = v;
+          GM_setValue('customPlaybackRate', v);
+          setRate(v);
+        }
+        return;
+      }
+      const toggle = e.target.closest?.('.bfq-toggle');
+      if (toggle) {
+        options.enablePlaybackRateControl = !options.enablePlaybackRateControl;
+        GM_setValue('enablePlaybackRateControl', options.enablePlaybackRateControl);
+        const sw = toggle.querySelector('.bfq-mini-switch');
+        if (sw) sw.classList.toggle('on', options.enablePlaybackRateControl);
+        if (options.enablePlaybackRateControl) {
+          applyToAllMedia();
+          if (options.playbackRate !== 1) startEnforce();
+        } else {
+          stopEnforce();
+          setRate(1);
+        }
+      }
+    };
+
+    const buildBtn = () => {
+      const btn = document.createElement('div');
+      btn.id = 'bfq-speed-btn';
+      btn.title = '脚本倍速控制';
+      btn.innerHTML = `<span class="bfq-speed-label">▶ ${fmtRate(options.playbackRate)}</span><span class="bfq-speed-chev">▾</span>`;
+      return btn;
+    };
+
+    const mount = () => {
+      if (btnEl && document.contains(btnEl)) return;
+      const player = findPlayer();
+      if (!player) return;
+      btnEl = buildBtn();
+      popEl = document.createElement('div');
+      popEl.className = 'bfq-speed-pop';
+      refreshPop();
+      player.style.position = player.style.position || 'relative';
+      player.appendChild(btnEl);
+      player.appendChild(popEl);
+      btnEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        popEl.classList.toggle('show');
+      });
+      popEl.addEventListener('click', onPopClick);
+      document.addEventListener('click', (e) => {
+        if (!popEl.contains(e.target) && e.target !== btnEl && !btnEl.contains(e.target)) popEl.classList.remove('show');
+      }, true);
+      console.log('[Bilibili脚本] 倍速按钮已挂载');
+    };
+
+    const mountObserver = new MutationObserver(() => mount());
+    const startMountWatch = () => {
+      mount();
+      try { mountObserver.observe(document.body, { childList: true, subtree: false }); } catch (e) {}
+    };
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', startMountWatch, { once: true });
+    } else {
+      startMountWatch();
+    }
+    setTimeout(applyToAllMedia, 800);
+    setTimeout(applyToAllMedia, 2500);
+  }
+
+  installPlaybackRateController();
 
   /* ========== 4. 设置面板 ========== */
   GM_addStyle(`
