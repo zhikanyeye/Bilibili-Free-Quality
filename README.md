@@ -1,7 +1,7 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Version](https://img.shields.io/static/v1?label=version&message=4.0.0-alpha.15&color=orange)
+![Version](https://img.shields.io/static/v1?label=version&message=4.0.0-alpha.16&color=orange)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 
 ## 📌 简介
@@ -106,6 +106,9 @@
 4. 直播分区接口异常时，将 `/xlive/web-interface/v1/second/getList` 兜底到 `/room/v3/area/getRoomList` 并转换数据结构
 
 ## 🔄 更新日志
+
+### v4.0.0-alpha.16 (2026-07-19)
+- 🎬 **倍速按钮**：进入播放器全屏时自动隐藏悬浮按钮并关闭倍速弹层，退出全屏后自动恢复
 
 ### v4.0.0-alpha.15 (2026-07-19)
 - 🐛 **修复**：SPA 切推荐视频卡在 360P，必须手动刷新才出 1080P

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      4.0.0-alpha.15
+// @version      4.0.0-alpha.16
 // @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P，SPA 切视频等待 state 对齐后重签 + 安全改写 player/wbi/v2 登录态；客户端兼容模式自动试用画质 + 拦截画质劫持 · 拦 rcmd 清 buvid3 防登录弹窗 · 彻底屏蔽自动暂停 · 评论按 DD1969 方式只替换评论容器（不全站 hide，保护顶栏）· 播放器底部悬浮倍速按钮（借鉴 globalSpeed GhostMode 强制 playbackRate 生效）· 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 无远程样式依赖
 // @license      GPL-3.0
 // @author       zhikanyeye
@@ -2867,6 +2867,7 @@
     GM_addStyle(`
 #bfq-speed-btn{position:absolute;right:148px;bottom:48px;z-index:1000;display:flex;align-items:center;gap:4px;padding:0 10px;height:36px;border-radius:18px;background:rgba(0,0,0,.5);color:#fff;cursor:pointer;font-size:13px;user-select:none;transition:background .2s;backdrop-filter:blur(2px)}
 #bfq-speed-btn:hover{background:rgba(0,0,0,.7)}
+:fullscreen #bfq-speed-btn,:fullscreen .bfq-speed-pop,:-webkit-full-screen #bfq-speed-btn,:-webkit-full-screen .bfq-speed-pop{display:none!important}
 #bfq-speed-btn .bfq-speed-label{font-weight:600;letter-spacing:.5px}
 #bfq-speed-btn .bfq-speed-chev{font-size:10px;opacity:.7;margin-left:2px}
 .bfq-speed-pop{position:absolute;bottom:88px;right:148px;z-index:1001;min-width:160px;padding:8px 0;background:#fff;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.25);font-family:sans-serif;display:none}
@@ -2906,6 +2907,15 @@
 
     let btnEl = null;
     let popEl = null;
+
+    const syncFullscreenUi = () => {
+      const isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
+      if (btnEl) btnEl.style.display = isFullscreen ? 'none' : '';
+      if (isFullscreen && popEl) popEl.classList.remove('show');
+    };
+
+    document.addEventListener('fullscreenchange', syncFullscreenUi);
+    document.addEventListener('webkitfullscreenchange', syncFullscreenUi);
 
     const refreshBtnLabel = () => {
       if (btnEl) btnEl.querySelector('.bfq-speed-label').textContent = `▶ ${fmtRate(options.playbackRate)}`;
@@ -3002,6 +3012,7 @@
       player.style.position = player.style.position || 'relative';
       player.appendChild(btnEl);
       player.appendChild(popEl);
+      syncFullscreenUi();
       btnEl.addEventListener('click', (e) => {
         e.stopPropagation();
         popEl.classList.toggle('show');
