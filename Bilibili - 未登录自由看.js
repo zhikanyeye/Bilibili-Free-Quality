@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      4.0.0-alpha.7
+// @version      4.0.0-alpha.8
 // @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P；客户端兼容模式自动试用画质 + 拦截画质劫持，fallback 兜底拔高 · 拦 rcmd 清 buvid3 防登录弹窗（DD1969 思路）· 彻底屏蔽自动暂停 · WBI 签名自调评论 API，视频/动态/专栏评论完整解锁 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P
 // @license      GPL-3.0
 // @author       zhikanyeye
@@ -66,25 +66,26 @@
   };
 
   /* ========== 工具函数 ========== */
-  // 等待元素出现
   function waitForElement(selector, timeout = 10000) {
     return new Promise((resolve, reject) => {
       const element = document.querySelector(selector);
       if (element) return resolve(element);
-      
-      const observer = new MutationObserver((mutations, obs) => {
-        const element = document.querySelector(selector);
-        if (element) {
+
+      const root = document.body || document.documentElement;
+      if (!root) {
+        reject(new Error(`等待元素失败: 无 document root`));
+        return;
+      }
+
+      const observer = new MutationObserver((_mutations, obs) => {
+        const el = document.querySelector(selector);
+        if (el) {
           obs.disconnect();
-          resolve(element);
+          resolve(el);
         }
       });
-      
-      observer.observe(document.body, {
-        childList: true,
-        subtree: true
-      });
-      
+      observer.observe(root, { childList: true, subtree: true });
+
       setTimeout(() => {
         observer.disconnect();
         reject(new Error(`等待元素超时: ${selector}`));
@@ -127,9 +128,11 @@
   // 吞掉 SSR 写入的低质 __playinfo__，只接受 writePlayinfo 写入的高清数据
   let _playinfoCache = null;
   let _playinfoWriteAllow = false;
+  let _playinfoKey = ''; // aid_cid，避免 SPA 切视频串流
   function clearPlayinfoSSR() {
     try {
       _playinfoCache = null;
+      _playinfoKey = '';
       Object.defineProperty(unsafeWindow, '__playinfo__', {
         get: () => _playinfoCache,
         set: (v) => { if (_playinfoWriteAllow) _playinfoCache = v; },
@@ -142,6 +145,51 @@
     } catch (e) {
       try { unsafeWindow.__playinfo__ = null; } catch (e2) {}
     }
+  }
+
+  function getPlayurlRequestKey(rawUrl) {
+    try {
+      const u = new URL(rawUrl, location.href);
+      const aid = u.searchParams.get('avid') || u.searchParams.get('aid') || '';
+      const cid = u.searchParams.get('cid') || '';
+      const bvid = u.searchParams.get('bvid') || '';
+      return `${bvid || aid}_${cid}`;
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function isPlayurlRequestUrl(rawUrl) {
+    if (!rawUrl) return false;
+    return rawUrl.includes('/x/player/wbi/playurl')
+      || rawUrl.includes('/x/player/playurl')
+      || rawUrl.includes('/pgc/player/web/playurl')
+      || rawUrl.includes('/pgc/player/web/v2/playurl');
+  }
+
+  // SPA 切视频时清空旧高清缓存，强制重新走 playurl 拦截
+  function installSpaPlayinfoReset() {
+    const reset = () => {
+      _playinfoCache = null;
+      _playinfoKey = '';
+      ensureFakeLoginCookie();
+    };
+    const wrapHistory = (type) => {
+      const origin = history[type];
+      if (typeof origin !== 'function' || origin.__bfqPatched) return;
+      const wrapped = function (...args) {
+        const ret = origin.apply(this, args);
+        reset();
+        return ret;
+      };
+      wrapped.__bfqPatched = true;
+      history[type] = wrapped;
+    };
+    try {
+      wrapHistory('pushState');
+      wrapHistory('replaceState');
+      window.addEventListener('popstate', reset);
+    } catch (e) {}
   }
 
   // 获取视频AID
@@ -219,6 +267,57 @@
 
   function isCommentDetailPage() {
     return isVideoCommentPage() || PAGE_RE.dynamic.test(location.href) || PAGE_RE.opus.test(location.href) || PAGE_RE.article.test(location.href);
+  }
+
+  // 需要自绘评论的页面：动态/专栏等官方组件在未登录下常挂；视频页走协议级，不自绘
+  function needsCustomCommentRender() {
+    return PAGE_RE.dynamic.test(location.href) || PAGE_RE.opus.test(location.href) || PAGE_RE.article.test(location.href);
+  }
+
+  // 协议级评论解锁：拦截 reply 请求并 credentials:omit（对齐 beefreely），不替换 DOM
+  let replyUnlockInstalled = false;
+  function installReplyProtocolUnlock() {
+    if (!options.enableCommentUnlock || replyUnlockInstalled || isBilibiliLoggedIn()) return;
+    replyUnlockInstalled = true;
+
+    const isReplyUrl = (u) => u && (
+      u.includes('/x/v2/reply/wbi/main') ||
+      u.includes('/x/v2/reply/reply') ||
+      u.includes('/x/v2/reply/wbi/reply')
+    );
+
+    const originFetch = unsafeWindow.fetch?.bind(unsafeWindow);
+    if (originFetch) {
+      unsafeWindow.fetch = function(input, init) {
+        const rawUrl = typeof input === 'string' ? input : (input?.url ?? '');
+        if (!isReplyUrl(rawUrl)) return originFetch(input, init);
+        const nextInit = { ...(init || {}), credentials: 'omit' };
+        if (input instanceof Request) {
+          try {
+            return originFetch(new Request(rawUrl, { ...input, credentials: 'omit' }), nextInit);
+          } catch (e) {
+            return originFetch(rawUrl, nextInit);
+          }
+        }
+        return originFetch(rawUrl, nextInit);
+      };
+    }
+
+    const XHR = unsafeWindow.XMLHttpRequest;
+    if (!XHR || XHR.prototype.__bfqReplyPatched) return;
+    XHR.prototype.__bfqReplyPatched = true;
+    const originOpen = XHR.prototype.open;
+    const originSend = XHR.prototype.send;
+    XHR.prototype.open = function(method, url, ...rest) {
+      this.__bfqReplyUrl = typeof url === 'string' ? url : (url?.url ?? '');
+      return originOpen.call(this, method, url, ...rest);
+    };
+    XHR.prototype.send = function(...args) {
+      if (isReplyUrl(this.__bfqReplyUrl)) {
+        try { this.withCredentials = false; } catch (e) {}
+      }
+      return originSend.apply(this, args);
+    };
   }
 
   function getDynamicIdFromLocation() {
@@ -502,9 +601,10 @@
   const PROTOCOL_UNLOCK_TARGET_QN = 80;
   let playurlUnlockInstalled = false;
 
-  function writePlayinfo(json) {
+  function writePlayinfo(json, requestKey = '') {
     try {
       if (!json || json.code !== 0) return;
+      if (requestKey) _playinfoKey = requestKey;
       _playinfoWriteAllow = true;
       _playinfoCache = json;
       try { unsafeWindow.__playinfo__ = json; } catch (e) {}
@@ -596,14 +696,22 @@
 
     ensureFakeLoginCookie();
     clearPlayinfoSSR();
+    installSpaPlayinfoReset();
+
+    const fetchPlayurlJson = async (rawUrl, useTryLook) => {
+      const signed = await buildPlayurlUrl(rawUrl, useTryLook);
+      const res = await nativePageFetch(signed, { credentials: 'include', method: 'GET' });
+      const json = await parseFetchResponseJson(res);
+      return { res, json };
+    };
 
     /* ---- fetch 链 ---- */
-    const originFetch = unsafeWindow.fetch?.bind(unsafeWindow);
+    const originFetch = unsafeWindow.fetch?.bind(unsafeWindow) || nativePageFetch;
     if (originFetch) {
       unsafeWindow.fetch = async function(input, init) {
         let rawUrl = typeof input === 'string' ? input : (input?.url ?? '');
 
-        if (!rawUrl || !rawUrl.includes('/x/player/wbi/playurl')) {
+        if (!isPlayurlRequestUrl(rawUrl)) {
           return originFetch(input, init);
         }
 
@@ -611,19 +719,17 @@
           const url = new URL(rawUrl, location.href);
           if (url.hostname !== 'api.bilibili.com') return originFetch(input, init);
 
-          const mergedInit = { ...(init || {}), credentials: 'include' };
-          if (input instanceof Request) {
-            try {
-              const headers = new Headers(input.headers || {});
-              mergedInit.headers = headers;
-            } catch (e) {}
+          const reqKey = getPlayurlRequestKey(rawUrl);
+          // 切到新 aid/cid 时先清旧缓存，防止串流
+          if (reqKey && _playinfoKey && reqKey !== _playinfoKey) {
+            _playinfoCache = null;
+            _playinfoKey = '';
           }
+          ensureFakeLoginCookie();
 
-          const urlWithTryLook = await buildPlayurlUrl(rawUrl, true);
-          const res1 = await originFetch(urlWithTryLook, mergedInit);
-          const json1 = await parseFetchResponseJson(res1);
+          let { json: json1 } = await fetchPlayurlJson(rawUrl, true);
           if (json1 && !isTrialOnlyPlayurl(json1)) {
-            writePlayinfo(json1);
+            writePlayinfo(json1, reqKey);
             return new Response(JSON.stringify(json1), {
               status: 200,
               statusText: 'OK',
@@ -632,10 +738,8 @@
           }
 
           console.warn('[Bilibili脚本] try_look=1 仍给试看，重试仅 qn=' + getTargetQn());
-          const urlNoTryLook = await buildPlayurlUrl(rawUrl, false);
-          const res2 = await originFetch(urlNoTryLook, mergedInit);
-          const json2 = await parseFetchResponseJson(res2);
-          if (json2) writePlayinfo(json2);
+          let { res: res2, json: json2 } = await fetchPlayurlJson(rawUrl, false);
+          if (json2) writePlayinfo(json2, reqKey);
           if (!json2) return res2;
           return new Response(JSON.stringify(json2), {
             status: 200,
@@ -665,7 +769,7 @@
 
     XHR.prototype.send = function(...args) {
       const rawUrl = this.__bfqPlayurlUrl;
-      if (!rawUrl || !rawUrl.includes('/x/player/wbi/playurl')) {
+      if (!isPlayurlRequestUrl(rawUrl)) {
         return originSend.apply(this, args);
       }
 
@@ -677,17 +781,19 @@
             return originSend.apply(xhr, args);
           }
 
-          const finalUrl = await buildPlayurlUrl(rawUrl, true);
-          let res = await nativePageFetch(finalUrl, { credentials: 'include', method: 'GET' });
-          let json = await res.json().catch(() => null);
+          const reqKey = getPlayurlRequestKey(rawUrl);
+          if (reqKey && _playinfoKey && reqKey !== _playinfoKey) {
+            _playinfoCache = null;
+            _playinfoKey = '';
+          }
+          ensureFakeLoginCookie();
 
+          let { json } = await fetchPlayurlJson(rawUrl, true);
           if (isTrialOnlyPlayurl(json)) {
             console.warn('[Bilibili脚本] XHR try_look=1 仍给试看，重试');
-            const fallbackUrl = await buildPlayurlUrl(rawUrl, false);
-            res = await nativePageFetch(fallbackUrl, { credentials: 'include', method: 'GET' });
-            json = await res.json().catch(() => null);
+            ({ json } = await fetchPlayurlJson(rawUrl, false));
           }
-          writePlayinfo(json);
+          writePlayinfo(json, reqKey);
           emitXhrFakeResponse(xhr, json || {});
         } catch (e) {
           console.warn('[Bilibili脚本] XHR playurl 解锁失败:', e);
@@ -925,8 +1031,9 @@
     loadEl.textContent = '加载中...';
     container.appendChild(loadEl);
     try {
-      const res = await fetch(
-        `https://api.bilibili.com/x/v2/reply/reply?oid=${commentOid}&root=${rootReplyID}&pn=${pageNum}&ps=10&type=${commentType}`
+      const res = await nativePageFetch(
+        `https://api.bilibili.com/x/v2/reply/reply?oid=${commentOid}&root=${rootReplyID}&pn=${pageNum}&ps=10&type=${commentType}`,
+        { credentials: 'omit' }
       );
       const data = await res.json();
       loadEl.remove();
@@ -965,7 +1072,7 @@
     const paginationStr = JSON.stringify({ offset: offset || '' });
     const wts = Math.floor(Date.now() / 1000);
     const qs = await getWbiQueryString({ oid: commentOid, type: commentType, mode, ps: COMMENT_PAGE_SIZE, pagination_str: paginationStr, wts });
-    const res = await fetch(`https://api.bilibili.com/x/v2/reply/wbi/main?${qs}`);
+    const res = await nativePageFetch(`https://api.bilibili.com/x/v2/reply/wbi/main?${qs}`, { credentials: 'omit' });
     return res.json();
   }
 
@@ -1073,6 +1180,15 @@
     if (!options.enableCommentUnlock) return;
     if (!isCommentDetailPage()) return;
 
+    // 视频页：只做协议级解锁，保留官方评论组件，避免自绘 hide 误伤顶栏
+    if (isVideoCommentPage() && !needsCustomCommentRender()) {
+      installReplyProtocolUnlock();
+      return;
+    }
+
+    // 动态/专栏：官方组件常挂，走自绘 fallback（安全挂载）
+    installReplyProtocolUnlock();
+
     commentCurrentSortType = COMMENT_SORT.HOT;
     commentIsLoading = false;
     commentIsEnd = false;
@@ -1130,15 +1246,29 @@
 #bili-jump-page-input:focus{border-color:#00aeec}
 `);
 
-    const nativeCommentSelector = 'bili-comments, .comment-container, #commentapp, #comment, .bili-comment-container';
+    // 收窄选择器：去掉 #comment / 裸 .comment-container，避免误伤顶栏等布局节点
+    const nativeCommentSelector = 'bili-comments, #commentapp bili-comments, #commentapp, .bili-comment-container';
+    const isSafeCommentRoot = (el) => {
+      if (!el || el.nodeType !== 1) return false;
+      if (el.closest?.('.bili-header, #bili-header-container, #biliMainHeader, .fixed-header')) return false;
+      const tag = (el.tagName || '').toUpperCase();
+      if (tag === 'BILI-COMMENTS' || tag === 'BILI-COMMENT-CONTAINER') return true;
+      if (el.id === 'commentapp') return true;
+      if (el.classList?.contains('bili-comment-container')) return true;
+      return false;
+    };
     let commentSection;
     let hasNativeCommentSection = true;
     try {
       commentSection = await waitForElement(nativeCommentSelector, 12000);
+      if (!isSafeCommentRoot(commentSection)) {
+        hasNativeCommentSection = false;
+        commentSection = document.querySelector('.article-container, .opus-detail, .opus-detail-content, main, #app') || document.body;
+      }
     } catch(e) {
       console.warn('[评论模块] 未找到官方评论容器，改用页面底部挂载:', e.message);
       hasNativeCommentSection = false;
-      commentSection = document.querySelector('main, #app, .article-container, .opus-detail, .opus-detail-content') || document.body;
+      commentSection = document.querySelector('.article-container, .opus-detail, .opus-detail-content, main, #app') || document.body;
       if (!commentSection) return;
     }
 
@@ -1171,41 +1301,41 @@
         ? `<div id="bili-comment-pagination"><button id="bili-prev-page" disabled>上一页</button><span id="bili-page-info">第 1 页</span><button id="bili-next-page">下一页</button><label class="bili-page-jump">跳至 <input id="bili-jump-page-input" type="number" min="1" inputmode="numeric" /><button id="bili-jump-page">跳转</button></label></div>`
         : `<div id="bili-scroll-anchor"></div>`}`;
 
+    const hideOfficialComment = (el) => {
+      if (!isSafeCommentRoot(el)) return false;
+      el.style.setProperty('display', 'none', 'important');
+      return true;
+    };
+
     const mountCustomComments = () => {
+      if (document.getElementById('bili-custom-comments') === customEl && customEl.isConnected) return;
       const nativeSection = document.querySelector(nativeCommentSelector);
-      if (nativeSection?.parentNode) {
-        nativeSection.parentNode.insertBefore(customEl, nativeSection.nextSibling);
-        nativeSection.style.display = 'none';
+      if (nativeSection?.parentNode && isSafeCommentRoot(nativeSection)) {
+        if (!customEl.isConnected) nativeSection.parentNode.insertBefore(customEl, nativeSection.nextSibling);
+        hideOfficialComment(nativeSection);
         return;
       }
-      if (hasNativeCommentSection && commentSection?.parentNode) {
-        commentSection.parentNode.insertBefore(customEl, commentSection.nextSibling);
-        commentSection.style.display = 'none';
+      if (hasNativeCommentSection && commentSection?.parentNode && isSafeCommentRoot(commentSection)) {
+        if (!customEl.isConnected) commentSection.parentNode.insertBefore(customEl, commentSection.nextSibling);
+        hideOfficialComment(commentSection);
         return;
       }
-      (commentSection || document.body).appendChild(customEl);
+      if (!customEl.isConnected) {
+        (commentSection || document.body).appendChild(customEl);
+      }
     };
 
     mountCustomComments();
 
-    // 守护自定义评论容器，防止被官方组件重新挂载时覆盖
-    const commentGuard = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        // 如果自定义容器被移出 DOM，重新插入
-        if (!document.getElementById('bili-custom-comments')) {
-          console.log('[评论模块] 检测到自定义评论容器被移除，重新插入...');
-          mountCustomComments();
-        }
-        // 如果有新的 bili-comments 被插入，立刻隐藏它
-        for (const node of mutation.addedNodes) {
-          if (node.nodeType === 1 && (node.tagName === 'BILI-COMMENTS' || node.tagName === 'BILI-COMMENT-CONTAINER')) {
-            node.style.display = 'none';
-            console.log('[评论模块] 守护：隐藏新出现的 bili-comments');
-          }
-        }
-      }
+    // 守护范围缩到评论父节点，避免全站 MutationObserver 误伤顶栏
+    const guardRoot = customEl.parentNode || commentSection || document.body;
+    const commentGuard = new MutationObserver(() => {
+      if (!document.getElementById('bili-custom-comments')) mountCustomComments();
+      guardRoot.querySelectorAll?.('bili-comments, bili-comment-container')?.forEach((node) => {
+        if (isSafeCommentRoot(node)) hideOfficialComment(node);
+      });
     });
-    commentGuard.observe(document.body, { childList: true, subtree: true });
+    if (guardRoot) commentGuard.observe(guardRoot, { childList: true, subtree: true });
 
     customEl.querySelectorAll('.sort-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
@@ -1301,6 +1431,7 @@
   /* ========== 1. 已登录退出 + 主模块安装 ========== */
 
   installRcmdLoginGuard();
+  installReplyProtocolUnlock();
   installLiveAreaUnlock();
   installPlayurlUnlock();
   setupDynamicCommentBtnModifier();

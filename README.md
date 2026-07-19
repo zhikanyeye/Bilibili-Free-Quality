@@ -1,7 +1,7 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Version](https://img.shields.io/badge/version-4.0.0--alpha.7-orange)
+![Version](https://img.shields.io/badge/version-4.0.0--alpha.8-orange)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 
 ## 📌 简介
@@ -106,6 +106,12 @@
 4. 直播分区接口异常时，将 `/xlive/web-interface/v1/second/getList` 兜底到 `/room/v3/area/getRoomList` 并转换数据结构
 
 ## 🔄 更新日志
+
+### v4.0.0-alpha.8 (2026-07-19)
+- 🐛 **修复**：评论自绘误伤视频页顶栏——视频/list/festival 改为协议级评论（`credentials:omit`），保留官方 `bili-comments`，不再 hide 官方评论 DOM
+- 🐛 **修复**：SPA 切视频后 1080P 间歇失效——按 aid/cid 清 `__playinfo__` 缓存，hook pushState/replaceState/popstate，扩展 playurl 拦截范围并用 nativePageFetch 重签
+- 🛡️ **优化**：动态/专栏仍走自绘 fallback，挂载选择器收窄 + 禁止 hide 顶栏内节点
+- 📚 **README**：版本 badge → alpha.8
 
 ### v4.0.0-alpha.7 (2026-07-18)
 - 🐛 **修复**：顶栏仍消失——`Node.prototype.appendChild` 全局劫持拦截 `miniLogin` 会误伤 B 站顶栏依赖的脚本加载链路
