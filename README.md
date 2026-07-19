@@ -1,10 +1,11 @@
 # Bilibili - 未登录自由看
 
-[![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-**当前版本：4.0.0-alpha.18**
-
-![Version](https://img.shields.io/static/v1?label=version&message=4.0.0-alpha.18&color=orange)
+[![License: GPL-3.0](https://img.shields.io/github/license/zhikanyeye/Bilibili-Free-Quality.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Version: alpha.18](https://img.shields.io/badge/version-alpha.18-orange.svg)](#更新日志)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
+[![jsDelivr](https://img.shields.io/badge/jsDelivr-CDN-blue.svg)](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@c817deb/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js)
+
+当前版本：`4.0.0-alpha.18`
 
 ## 📌 简介
 
@@ -38,7 +39,7 @@
 - ✅ **全登录态倍速播放**：登录与未登录均在播放器原生控制栏显示倍速按钮，支持预设和自定义倍速；全屏时自动隐藏
 - ✅ **可视化面板**，一键切换 1080P / 720P / 480P / 360P，并可切换解锁模式
 - ✅ **Edge / Chrome / Firefox** 全平台兼容
-- ✅ **零配置**，安装即用；已登录用户自动退出，零干扰
+- ✅ **登录态隔离**：登录后仅保留通用倍速功能，未登录解锁、评论重绘和防登录逻辑自动停用
 
 ## 🖼️ 功能演示
 
@@ -46,12 +47,28 @@
 
 ## ⚙️ 安装与使用
 
+### 安装地址
+
+| 渠道 | 地址 | 用途 |
+|---|---|---|
+| Greasy Fork | [安装稳定发布版](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B) | 推荐给普通用户，使用平台更新机制 |
+| jsDelivr CDN | [安装 alpha.18 固定快照](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@c817deb/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js) | 已验证可用，锁定当前提交 |
+| GitHub | [查看开发分支源码](https://github.com/zhikanyeye/Bilibili-Free-Quality/tree/v4.0-protocol-level-unlock) | 查看源码、提交记录和问题反馈 |
+
+jsDelivr 地址格式：
+
+```text
+https://cdn.jsdelivr.net/gh/user/repo@version/file
+```
+
+当前仓库尚未发布 Git tag，因此 CDN 使用提交哈希固定版本。正式发布 `v4.0.0-alpha.18` tag 后，可使用 `@v4.0.0-alpha.18` 获得更清晰的版本化地址。当前开发分支由 GitHub 直接查看。
+
 | 步骤 | 操作 |
 |---|---|
 | 1 | 安装 [Tampermonkey](https://www.tampermonkey.net/) 或 [Violentmonkey](https://violentmonkey.github.io/) |
-| 2 | [点击这里安装此脚本](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B) |
+| 2 | 从上方 Greasy Fork 或 jsDelivr CDN 地址安装脚本 |
 | 3 | 打开支持的 B 站页面（建议未登录测试） |
-| 4 | 视频页右下角齿轮 → **脚本设置** 可调画质、评论和直播分区选项 |
+| 4 | 视频页播放器设置 → **脚本设置** 可调画质、评论和直播分区选项；右侧控制栏可调倍速 |
 
 ## 🛠️ 自定义设置
 
@@ -61,7 +78,9 @@
 - **解锁全部评论**：开 / 关（视频、动态、专栏页自调 API 渲染评论）
 - **分页加载评论**：开 / 关（开启后支持上一页、下一页和输入页码跳转；关闭则使用无限滚动模式）
 - **直播分区连续加载**：开 / 关（未登录下拉分区列表时启用接口兜底）
-- **已登录自动退出**：零冲突、零性能损耗
+- **倍速播放**：0.5 / 0.75 / 1 / 1.25 / 1.5 / 2 / 2.5 / 3 倍预设，支持 0.07-16 自定义输入
+- **倍速强制**：开 / 关；已选择倍速通过 `GM_setValue` 持久保存，SPA 切视频后自动恢复
+- **登录后行为**：保留倍速控制器，其余未登录专属功能自动停用
 
 ## 📊 脚本信息
 
@@ -79,7 +98,7 @@
   `document-start`（越早越好）
 
 - **体积**  
-  约 58 KB（包含评论渲染、WBI 签名、直播分区兜底与设置面板）
+  约 130 KB（包含评论渲染、WBI 签名、直播分区兜底、倍速控制与设置面板）
 
 ## 💡 工作原理
 
@@ -107,6 +126,7 @@
 2. 动态详情通过 `x/polymer/web-dynamic/v1/detail` 获取评论目标；专栏使用专栏评论类型直接加载
 3. 自建评论渲染逻辑，支持无限滚动、分页、页码跳转与子评论展开
 4. 直播分区接口异常时，将 `/xlive/web-interface/v1/second/getList` 兜底到 `/room/v3/area/getRoomList` 并转换数据结构
+5. 倍速控制器在登录与未登录状态均安装，等待播放器稳定后接入原生右侧控制栏；SPA 重建播放器时自动重挂载
 
 ## 🔄 更新日志
 
@@ -115,6 +135,7 @@
 - **稳定挂载**：等待页面可见、视频元数据和控制栏尺寸就绪后再挂载，减少后台标签页错位
 - **SPA 恢复**：播放器或 video 节点被替换后自动重挂载并恢复已保存倍速
 - **生命周期参考**：参考 `hanydd/BilibiliSponsorBlock` 的播放器就绪与重挂载设计，保持当前 Userscript 轻量结构
+- **README/CDN**：补齐当前功能、登录后行为和倍速设置说明；新增 jsDelivr 固定提交安装地址，版本徽章缩短为 `alpha.18`
 
 ### v4.0.0-alpha.17 (2026-07-19)
 - ▶️ **倍速播放**：将倍速控制器移到登录态退出逻辑之前，登录与未登录均可使用悬浮倍速按钮
