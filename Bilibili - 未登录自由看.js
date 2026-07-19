@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      4.0.0-alpha.14
-// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P，SPA 切视频检测 aid/cid 自动重签；客户端兼容模式自动试用画质 + 拦截画质劫持 · 拦 rcmd 清 buvid3 防登录弹窗 · 彻底屏蔽自动暂停 · 评论按 DD1969 方式只替换评论容器（不全站 hide，保护顶栏）· 播放器底部悬浮倍速按钮（借鉴 globalSpeed GhostMode 强制 playbackRate 生效）· 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 无远程样式依赖
+// @version      4.0.0-alpha.15
+// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P，SPA 切视频等待 state 对齐后重签 + 安全改写 player/wbi/v2 登录态；客户端兼容模式自动试用画质 + 拦截画质劫持 · 拦 rcmd 清 buvid3 防登录弹窗 · 彻底屏蔽自动暂停 · 评论按 DD1969 方式只替换评论容器（不全站 hide，保护顶栏）· 播放器底部悬浮倍速按钮（借鉴 globalSpeed GhostMode 强制 playbackRate 生效）· 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 无远程样式依赖
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -131,6 +131,7 @@
   let _playinfoCache = null;
   let _playinfoWriteAllow = false;
   let _playinfoKey = ''; // aid_cid，避免 SPA 切视频串流
+  let _videoGeneration = 0;
   function clearPlayinfoSSR() {
     try {
       _playinfoCache = null;
@@ -169,20 +170,115 @@
       || rawUrl.includes('/pgc/player/web/v2/playurl');
   }
 
+  function getUrlBvid() {
+    try {
+      return location.pathname.match(/BV[\w]+/i)?.[0] || '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function getVideoIdsFromState() {
+    try {
+      const state = unsafeWindow.__INITIAL_STATE__ || {};
+      const aid = String(state.aid || state.videoData?.aid || state.videoData?.id || '');
+      const cid = String(state.cid || state.videoData?.cid || state.player?.cid || state.videoData?.pages?.[0]?.cid || '');
+      const bvid = String(state.bvid || state.videoData?.bvid || '');
+      return { aid, cid, bvid };
+    } catch (e) {
+      return { aid: '', cid: '', bvid: getUrlBvid() };
+    }
+  }
+
   function getCurrentVideoKey() {
     try {
-      const state = unsafeWindow.__INITIAL_STATE__;
-      const aid = String(state?.aid || state?.videoData?.aid || '');
-      const cid = String(state?.cid || state?.videoData?.cid || state?.player?.cid || '');
-      const bvid = String(state?.bvid || state?.videoData?.bvid || location.pathname.match(/BV[\w]+/i)?.[0] || '');
-      if (aid || bvid || cid) return `${bvid || aid}_${cid}`;
+      const { aid, cid, bvid } = getVideoIdsFromState();
+      const urlBvid = getUrlBvid();
+      if (aid || bvid || urlBvid || cid) return `${urlBvid || bvid || aid}_${cid}`;
     } catch (e) {}
     try {
-      const bv = location.pathname.match(/BV[\w]+/i)?.[0] || '';
+      const bv = getUrlBvid();
       return bv ? `${bv}_` : location.pathname;
     } catch (e) {
       return location.pathname;
     }
+  }
+
+  // URL 中的 BV 已变且 state 尚未跟上时返回 true
+  function isStateStaleForUrl() {
+    try {
+      const urlBv = getUrlBvid();
+      if (!urlBv) return false;
+      const { bvid, aid, cid } = getVideoIdsFromState();
+      if (!bvid || bvid.toUpperCase() !== urlBv.toUpperCase()) return true;
+      if (!cid && !aid) return true;
+      return false;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function waitForVideoStateReady(timeout = 5000, interval = 100) {
+    return new Promise((resolve) => {
+      const start = Date.now();
+      const tick = () => {
+        if (!isStateStaleForUrl()) {
+          const ids = getVideoIdsFromState();
+          if (ids.cid && (ids.aid || ids.bvid)) {
+            resolve(ids);
+            return;
+          }
+        }
+        if (Date.now() - start >= timeout) {
+          resolve(getVideoIdsFromState());
+          return;
+        }
+        setTimeout(tick, interval);
+      };
+      tick();
+    });
+  }
+
+  async function resolveCurrentVideoIds() {
+    const urlBvid = getUrlBvid();
+    const stateIds = getVideoIdsFromState();
+    if (!urlBvid || (stateIds.bvid && stateIds.bvid.toUpperCase() === urlBvid.toUpperCase() && stateIds.cid)) {
+      return stateIds;
+    }
+
+    try {
+      const res = await nativePageFetch(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(urlBvid)}`, {
+        credentials: 'include'
+      });
+      const json = await res.json();
+      const data = json?.data;
+      if (json?.code !== 0 || !data) return { aid: '', cid: '', bvid: urlBvid };
+      const page = Math.max(1, Number(new URL(location.href).searchParams.get('p') || 1));
+      const pageInfo = Array.isArray(data.pages) ? data.pages[page - 1] || data.pages[0] : null;
+      return {
+        aid: String(data.aid || ''),
+        cid: String(pageInfo?.cid || data.cid || ''),
+        bvid: String(data.bvid || urlBvid)
+      };
+    } catch (e) {
+      return { aid: '', cid: '', bvid: urlBvid };
+    }
+  }
+
+  // 同步 localStorage 默认画质，避免 SPA 切片后按 16/360 初始化
+  function patchPlayerProfileQuality() {
+    try {
+      const qn = getTargetQn();
+      const key = 'bpx_player_profile';
+      let profile = {};
+      try { profile = JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch (e) { profile = {}; }
+      if (!profile.media) profile.media = {};
+      if (profile.media.quality !== qn || profile.media.qualityMark !== 'auto') {
+        profile.media.quality = qn;
+        profile.media.qualityMark = 'auto';
+        localStorage.setItem(key, JSON.stringify(profile));
+      }
+    } catch (e) {}
   }
 
   // 强制切到目标画质（协议级也走，避免卡在 480/360）
@@ -191,18 +287,40 @@
       const map = { 1080: 80, 720: 64, 480: 32, 360: 16 };
       const target = map[options.preferQuality] || 80;
       const player = unsafeWindow.player;
-      if (!player?.requestQuality) return false;
-      const supported = player.getSupportedQualityList?.();
-      let qn = target;
-      if (Array.isArray(supported) && supported.length) {
-        if (supported.includes(target)) qn = target;
-        else {
-          // 优先不高于目标的最高档，再退到列表最高
-          const lower = supported.filter(q => q <= target);
-          qn = lower.length ? Math.max(...lower) : Math.max(...supported);
-        }
+      if (!player) return false;
+
+      // 部分版本优先 setQuality
+      if (typeof player.setQuality === 'function') {
+        Promise.resolve(player.setQuality(target)).catch(() => {});
       }
-      Promise.resolve(player.requestQuality(qn)).catch(() => {});
+
+      if (typeof player.requestQuality === 'function') {
+        const supported = player.getSupportedQualityList?.();
+        let qn = target;
+        if (Array.isArray(supported) && supported.length) {
+          if (supported.includes(target)) qn = target;
+          else {
+            const lower = supported.filter(q => q <= target);
+            qn = lower.length ? Math.max(...lower) : Math.max(...supported);
+          }
+        }
+        Promise.resolve(player.requestQuality(qn)).catch(() => {});
+      } else if (typeof player.setQuality !== 'function') {
+        return false;
+      }
+
+      // 写入高清流后，部分场景需 reload 媒体源才能真正切档
+      try {
+        const cur = player.getCurrentQuality?.();
+        if (cur != null && cur < target && typeof player.reload === 'function') {
+          // 仅在持续低档时 reload，避免频繁打断
+          if (!player.__bfqReloadAt || Date.now() - player.__bfqReloadAt > 4000) {
+            player.__bfqReloadAt = Date.now();
+            Promise.resolve(player.reload()).catch(() => {});
+          }
+        }
+      } catch (e) {}
+
       return true;
     } catch (e) {
       return false;
@@ -219,16 +337,41 @@
     setTimeout(tick, 80);
   }
 
-  async function proactiveRefetchPlayurl(reason = 'spa') {
+  function maxQnOfPlayurl(json) {
+    try {
+      const d = json?.data;
+      if (!d) return 0;
+      if (d.dash?.video?.length) return Math.max(...d.dash.video.map(v => v.id || 0));
+      if (Array.isArray(d.accept_quality) && d.accept_quality.length) return Math.max(...d.accept_quality);
+      return d.quality || 0;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  async function proactiveRefetchPlayurl(reason = 'spa', forcedIds = null, generation = _videoGeneration) {
     if (!options.enableProtocolUnlock || isBilibiliLoggedIn()) return false;
     try {
-      const state = unsafeWindow.__INITIAL_STATE__ || {};
-      const aid = state.aid || state.videoData?.aid || '';
-      const cid = state.cid || state.videoData?.cid || state.player?.cid || '';
-      const bvid = state.bvid || state.videoData?.bvid || location.pathname.match(/BV[\w]+/i)?.[0] || '';
-      if (!cid || (!aid && !bvid)) return false;
-
       ensureFakeLoginCookie();
+      patchPlayerProfileQuality();
+
+      let aid, cid, bvid;
+      if (forcedIds?.cid && (forcedIds.aid || forcedIds.bvid)) {
+        ({ aid, cid, bvid } = forcedIds);
+      } else {
+        // SPA 切片后 state 常滞后，先等到 URL 与 state 对齐
+        await waitForVideoStateReady(1200, 80);
+        const ready = await resolveCurrentVideoIds();
+        aid = ready.aid;
+        cid = ready.cid;
+        bvid = ready.bvid;
+      }
+      if (generation !== _videoGeneration) return false;
+      if (!cid || (!aid && !bvid)) {
+        console.warn('[Bilibili脚本] 主动重签跳过：缺少 aid/cid', reason, { aid, cid, bvid });
+        return false;
+      }
+
       const params = {
         fnval: '4048',
         fourk: '1',
@@ -247,6 +390,7 @@
       const res = await nativePageFetch(rawUrl, { credentials: 'include', method: 'GET' });
       let json = await parseFetchResponseJson(res);
       json = normalizePlayurlQuality(json);
+      if (generation !== _videoGeneration) return false;
 
       if (isTrialOnlyPlayurl(json)) {
         const params2 = { ...params };
@@ -258,18 +402,15 @@
         });
         let json2 = await parseFetchResponseJson(res2);
         json2 = normalizePlayurlQuality(json2);
-        const maxOf = (j) => {
-          const d = j?.data;
-          if (d?.dash?.video?.length) return Math.max(...d.dash.video.map(v => v.id || 0));
-          return d?.quality || 0;
-        };
-        if (json2 && maxOf(json2) >= maxOf(json || {})) json = json2;
+        if (generation !== _videoGeneration) return false;
+        if (json2 && maxQnOfPlayurl(json2) >= maxQnOfPlayurl(json || {})) json = json2;
       }
 
       if (json && json.code === 0) {
         const reqKey = `${bvid || aid}_${cid}`;
-        writePlayinfo(json, reqKey);
-        scheduleForceQuality(10, 400);
+        if (generation !== _videoGeneration) return false;
+        writePlayinfo(json, reqKey, generation);
+        scheduleForceQuality(12, 350);
         console.log('[Bilibili脚本] 主动重签 playurl 成功:', reason, reqKey, 'qn=', json?.data?.quality);
         return true;
       }
@@ -279,10 +420,75 @@
     return false;
   }
 
+  // 把高清 playinfo 推给已存在的 player 实例（SPA 切片关键）
+  function applyHighQualityToPlayer(json, reason = '') {
+    try {
+      if (!json || json.code !== 0) return;
+      const player = unsafeWindow.player;
+      if (!player) return;
+      const target = getTargetQn();
+      const payload = json.data || json;
+
+      // 常见内部入口：updatePlayurl / setPlayurl / reloadMedia
+      const candidates = [
+        'updatePlayurl',
+        'setPlayurl',
+        'setPlayInfo',
+        'updateMediaData',
+        'reloadMediaData',
+        'setMediaData',
+        'core_updatePlayurl',
+        'core_setPlayurl'
+      ];
+      for (const name of candidates) {
+        if (typeof player[name] === 'function') {
+          try {
+            player[name](payload);
+            console.log('[Bilibili脚本] 已调用 player.' + name, reason);
+            break;
+          } catch (e) {}
+        }
+      }
+
+      // 部分版本把 playurl 挂在 player 内部 store
+      try {
+        if (player.core && typeof player.core.updatePlayurl === 'function') {
+          player.core.updatePlayurl(payload);
+        }
+      } catch (e) {}
+
+      if (typeof player.setQuality === 'function') {
+        Promise.resolve(player.setQuality(target)).catch(() => {});
+      }
+      if (typeof player.requestQuality === 'function') {
+        Promise.resolve(player.requestQuality(target)).catch(() => {});
+      }
+
+      // 若仍低档，延迟再推一轮（给 SPA 播放器换源时间）
+      setTimeout(() => {
+        try {
+          const cur = player.getCurrentQuality?.();
+          if (cur != null && cur < target) {
+            if (typeof player.requestQuality === 'function') {
+              Promise.resolve(player.requestQuality(target)).catch(() => {});
+            }
+            if (typeof player.setQuality === 'function') {
+              Promise.resolve(player.setQuality(target)).catch(() => {});
+            }
+          }
+        } catch (e) {}
+      }, 600);
+    } catch (e) {}
+  }
+
+  let _spaResetToken = 0;
   function resetPlayinfoForNewVideo(reason = 'spa') {
+    const token = ++_spaResetToken;
+    const generation = ++_videoGeneration;
     _playinfoCache = null;
     _playinfoKey = '';
     ensureFakeLoginCookie();
+    patchPlayerProfileQuality();
     try {
       Object.defineProperty(unsafeWindow, '__playinfo__', {
         get: () => _playinfoCache,
@@ -298,29 +504,41 @@
     } catch (e) {
       try { unsafeWindow.__playinfo__ = null; } catch (e2) {}
     }
-    // 主动重签 + requestQuality：SPA 切视频时播放器常先吃到 360 缓存
-    proactiveRefetchPlayurl(reason);
-    scheduleForceQuality(16, 400);
+
+    // 等待 state 对齐后再重签，避免用旧 aid/cid 抢跑
+    const run = async (tag) => {
+      if (token !== _spaResetToken) return;
+      await proactiveRefetchPlayurl(tag, null, generation);
+      if (token !== _spaResetToken) return;
+      scheduleForceQuality(10, 400);
+    };
+
+    run(reason);
+    setTimeout(() => run(reason + '-delay1'), 700);
+    setTimeout(() => run(reason + '-delay2'), 1800);
     setTimeout(() => {
-      proactiveRefetchPlayurl(reason + '-delay1');
-      scheduleForceQuality(10, 500);
-    }, 800);
-    setTimeout(() => {
-      proactiveRefetchPlayurl(reason + '-delay2');
-      scheduleForceQuality(8, 700);
-    }, 2000);
-    setTimeout(() => scheduleForceQuality(6, 800), 4000);
+      if (token !== _spaResetToken) return;
+      scheduleForceQuality(8, 600);
+    }, 3500);
     console.log('[Bilibili脚本] 视频切换，清理 playinfo 并强制目标画质:', reason, getCurrentVideoKey());
   }
 
-  // SPA 切视频：history + aid/cid 轮询双保险，避免推荐切视频卡 360P
+  // SPA 切视频：history + pathname + aid/cid 三保险
   function installSpaPlayinfoReset() {
     let lastVideoKey = getCurrentVideoKey();
-    const onVideoSwitch = (reason) => {
+    let lastPath = location.pathname;
+    let lastHref = location.href;
+
+    const triggerSwitch = (reason) => {
       const key = getCurrentVideoKey();
-      if (key && key === lastVideoKey && reason !== 'history') {
-        // history 时 URL 可能已变但 state 尚未刷新，仍执行
-      }
+      const path = location.pathname;
+      const href = location.href;
+      // path/href 变了，或 aid/cid 变了，都算切片
+      const pathChanged = path !== lastPath || href !== lastHref;
+      const keyChanged = key && key !== lastVideoKey;
+      if (!pathChanged && !keyChanged) return;
+      lastPath = path;
+      lastHref = href;
       lastVideoKey = key || lastVideoKey;
       resetPlayinfoForNewVideo(reason);
     };
@@ -329,17 +547,18 @@
       const origin = history[type];
       if (typeof origin !== 'function' || origin.__bfqPatched) return;
       const wrapped = function (...args) {
-        const before = getCurrentVideoKey();
+        const beforePath = location.pathname;
+        const beforeKey = getCurrentVideoKey();
         const ret = origin.apply(this, args);
-        // URL 已变，state 可能延迟；先清缓存，再多次补强
+        // URL 可能已变，state 延迟；立即清缓存并调度重签
         setTimeout(() => {
-          const after = getCurrentVideoKey();
-          if (after !== before || location.pathname.includes('/video/') || location.pathname.includes('/list/')) {
-            lastVideoKey = after || before;
+          const afterPath = location.pathname;
+          const afterKey = getCurrentVideoKey();
+          if (afterPath !== beforePath || afterKey !== beforeKey) {
+            lastPath = afterPath;
+            lastHref = location.href;
+            lastVideoKey = afterKey || beforeKey;
             resetPlayinfoForNewVideo(type);
-            // state 晚到时再补两轮
-            setTimeout(() => resetPlayinfoForNewVideo(type + '-delay1'), 600);
-            setTimeout(() => resetPlayinfoForNewVideo(type + '-delay2'), 1600);
           }
         }, 0);
         return ret;
@@ -351,19 +570,16 @@
     try {
       wrapHistory('pushState');
       wrapHistory('replaceState');
-      window.addEventListener('popstate', () => onVideoSwitch('popstate'));
+      window.addEventListener('popstate', () => triggerSwitch('popstate'));
     } catch (e) {}
 
-    // aid/cid 变化检测（推荐栏点视频常不走完整刷新）
+    // pathname / aid / cid 轮询（推荐栏点视频有时不触发完整 history 语义）
     setInterval(() => {
       try {
         if (!PAGE_RE.video.test(location.href) && !PAGE_RE.festival.test(location.href) && !PAGE_RE.list.test(location.href)) return;
-        const key = getCurrentVideoKey();
-        if (!key || key === lastVideoKey) return;
-        lastVideoKey = key;
-        resetPlayinfoForNewVideo('aid-cid-watch');
+        triggerSwitch('poll-watch');
       } catch (e) {}
-    }, 800);
+    }, 400);
   }
 
   // 协议级开启时也装：试用按钮点击 + 画质掉落监听 + SPA 切视频检测
@@ -372,25 +588,29 @@
     if (!PAGE_RE.video.test(location.href) && !PAGE_RE.festival.test(location.href) && !PAGE_RE.list.test(location.href)) return;
 
     let dropStarted = false;
+    let lastRefetchAt = 0;
     const startDropWatcher = () => {
       if (dropStarted) return;
       dropStarted = true;
       setInterval(() => {
         try {
-          const map = { 1080: 80, 720: 64, 480: 32, 360: 16 };
-          const target = map[options.preferQuality] || 80;
+          const target = getTargetQn();
           const player = unsafeWindow.player;
           const cur = player?.getCurrentQuality?.();
           const supported = player?.getSupportedQualityList?.();
           if (cur == null) return;
-          if (cur < target) {
-            if (!supported?.length || supported.includes(target) || Math.max(...(supported || [0])) > cur) {
-              forcePlayerTargetQuality('drop-watch');
+
+          // 菜单已有 1080 但当前仍是 360：说明流未真正切档
+          const stuckLow = cur < target;
+          const menuHasTarget = Array.isArray(supported) && supported.includes(target);
+
+          if (stuckLow) {
+            forcePlayerTargetQuality(menuHasTarget ? 'drop-exact' : 'drop-watch');
+            // 持续卡低档时主动重签 playurl（节流）
+            if (Date.now() - lastRefetchAt > 5000 && options.enableProtocolUnlock) {
+              lastRefetchAt = Date.now();
+              proactiveRefetchPlayurl('drop-stuck');
             }
-          }
-          // 播放器支持列表已有目标档但当前仍低于目标：再拔一次
-          if (Array.isArray(supported) && supported.includes(target) && cur !== target) {
-            forcePlayerTargetQuality('drop-exact');
           }
         } catch (e) {}
       }, CONFIG.RE_UNLOCK_INTERVAL);
@@ -417,8 +637,10 @@
 
     // 播放器就绪后立即拔高 + 掉落监听
     const waitPlayer = setInterval(() => {
-      if (unsafeWindow.player?.requestQuality) {
+      const player = unsafeWindow.player;
+      if (player && (player.requestQuality || player.setQuality)) {
         clearInterval(waitPlayer);
+        patchPlayerProfileQuality();
         scheduleForceQuality(10, 600);
         startDropWatcher();
       }
@@ -431,7 +653,16 @@
         const media = unsafeWindow.player?.mediaElement?.();
         if (!media || media.dataset.bfqQualityHook) return;
         media.dataset.bfqQualityHook = '1';
-        const reforce = () => scheduleForceQuality(6, 400);
+        const reforce = () => {
+          scheduleForceQuality(6, 400);
+          if (options.enableProtocolUnlock) {
+            const cur = unsafeWindow.player?.getCurrentQuality?.();
+            if (cur != null && cur < getTargetQn() && Date.now() - lastRefetchAt > 3000) {
+              lastRefetchAt = Date.now();
+              proactiveRefetchPlayurl('media-event');
+            }
+          }
+        };
         media.addEventListener('play', reforce, true);
         media.addEventListener('loadeddata', reforce, true);
         media.addEventListener('loadedmetadata', reforce, true);
@@ -463,6 +694,8 @@
   let commentPageOffsets = [''];
   let commentCurrentPage = 0;
   let commentTotalCount = 0;
+  let commentGeneration = 0;
+  let commentAbortController = null;
   const COMMENT_SORT = { LATEST: 0, HOT: 2 };
   const COMMENT_PAGE_SIZE = 20;
 
@@ -798,22 +1031,25 @@
   const PROTOCOL_UNLOCK_TARGET_QN = 80;
   let playurlUnlockInstalled = false;
 
-  function writePlayinfo(json, requestKey = '') {
+  function writePlayinfo(json, requestKey = '', generation = _videoGeneration) {
     try {
-      if (!json || json.code !== 0) return;
+      if (!json || json.code !== 0 || generation !== _videoGeneration) return false;
       if (requestKey) _playinfoKey = requestKey;
       _playinfoWriteAllow = true;
       _playinfoCache = json;
       try { unsafeWindow.__playinfo__ = json; } catch (e) {}
       _playinfoWriteAllow = false;
-      // 写入高清流后多轮切画质，覆盖 SPA 切推荐后默认 360P
+      // SPA 切片后播放器实例已在，需主动推高清流
+      applyHighQualityToPlayer(json, 'write-playinfo');
       setTimeout(() => forcePlayerTargetQuality('after-playinfo'), 100);
       setTimeout(() => forcePlayerTargetQuality('after-playinfo-2'), 500);
       setTimeout(() => forcePlayerTargetQuality('after-playinfo-3'), 1200);
       setTimeout(() => forcePlayerTargetQuality('after-playinfo-4'), 2500);
       scheduleForceQuality(8, 450);
+      return true;
     } catch (e) {
       _playinfoWriteAllow = false;
+      return false;
     }
   }
 
@@ -828,18 +1064,17 @@
       response: { value: responseType === 'json' ? json : text, configurable: true },
       responseURL: { value: xhr.__bfqPlayurlUrl || '', configurable: true },
     });
-    try {
-      if (typeof xhr.onreadystatechange === 'function') xhr.onreadystatechange();
-    } catch (e) {}
-    try {
-      if (typeof xhr.onload === 'function') xhr.onload();
-    } catch (e) {}
-    try {
-      if (typeof xhr.onloadend === 'function') xhr.onloadend();
-    } catch (e) {}
     try { xhr.dispatchEvent(new Event('readystatechange')); } catch (e) {}
     try { xhr.dispatchEvent(new Event('load')); } catch (e) {}
     try { xhr.dispatchEvent(new Event('loadend')); } catch (e) {}
+  }
+
+  function hasPlayableMedia(json) {
+    const data = json?.data;
+    return json?.code === 0 && !!data && (
+      (Array.isArray(data.dash?.video) && data.dash.video.length > 0)
+      || (Array.isArray(data.durl) && data.durl.length > 0)
+    );
   }
 
   function getTargetQn() {
@@ -882,29 +1117,114 @@
     } catch (e) { return true; }
   }
 
-  // 把响应里的 quality / accept 对齐到 dash 实际最高档，方便播放器切 1080
+  // 把响应里的 quality / accept 对齐到 dash 实际最高档，并清掉登录/会员锁，方便 SPA 后切 1080
   function normalizePlayurlQuality(json) {
     try {
       if (!json || json.code !== 0 || !json.data) return json;
       const data = json.data;
+      const target = getTargetQn();
+
+      // 清除前端锁档标记（菜单里显示「需登录」的根源）
+      data.need_login = 0;
+      data.need_vip = 0;
+      data.isPreview = 0;
+      data.preview = 0;
+      if (data.vip_status != null) data.vip_status = 1;
+      if (data.vip_type != null && data.vip_type === 0) data.vip_type = 1;
+
       let maxQn = 0;
       if (data.dash?.video?.length) {
         maxQn = Math.max(...data.dash.video.map(v => v.id || 0));
       } else if (Array.isArray(data.durl) && data.quality) {
         maxQn = data.quality;
+      } else if (Array.isArray(data.accept_quality) && data.accept_quality.length) {
+        maxQn = Math.max(...data.accept_quality);
       }
+
       if (maxQn > 0) {
-        data.quality = maxQn;
+        // 优先展示用户目标档（若流里已有）
+        data.quality = maxQn >= target ? target : maxQn;
         if (Array.isArray(data.accept_quality)) {
-          if (!data.accept_quality.includes(maxQn)) data.accept_quality = [...data.accept_quality, maxQn].sort((a, b) => b - a);
+          const set = new Set(data.accept_quality);
+          set.add(maxQn);
+          if (maxQn >= target) set.add(target);
+          data.accept_quality = [...set].sort((a, b) => b - a);
         } else {
-          data.accept_quality = [maxQn, 64, 32, 16];
+          data.accept_quality = [maxQn, 64, 32, 16].filter((v, i, a) => a.indexOf(v) === i);
         }
       }
+
+      // support_formats：去掉 need_login / need_vip，让清晰度菜单可点 1080
+      if (Array.isArray(data.support_formats)) {
+        data.support_formats = data.support_formats.map((fmt) => {
+          if (!fmt || typeof fmt !== 'object') return fmt;
+          const next = { ...fmt };
+          if (next.quality != null && next.quality <= maxQn) {
+            next.need_login = false;
+            next.need_vip = false;
+            delete next.attribute;
+          }
+          return next;
+        });
+      }
+
       return json;
     } catch (e) {
       return json;
     }
+  }
+
+  // 安全改写 player/wbi/v2：只改 JSON 文本
+  function patchPlayerV2JsonText(text) {
+    try {
+      const json = JSON.parse(text);
+      if (!json?.data) return text;
+      const data = json.data;
+      if (!data.login_mid) data.login_mid = Math.floor(Math.random() * 1e8) + 1;
+      if (data.need_login_subtitle != null) data.need_login_subtitle = false;
+      if (!data.level_info) data.level_info = {};
+      if (!data.level_info.current_level || data.level_info.current_level < 1) {
+        data.level_info.current_level = 6;
+      }
+      // 播放器 widget 可能读这些字段决定画质/试看 UI
+      if (data.is_owner != null) data.is_owner = 0;
+      if ('answer_status' in data && data.answer_status === 0) data.answer_status = 1;
+      return JSON.stringify(json);
+    } catch (e) {
+      return text;
+    }
+  }
+
+  function isPlayerV2Url(rawUrl) {
+    return !!(rawUrl && rawUrl.includes('/x/player/wbi/v2'));
+  }
+
+  // 可多次 json()/text()/arrayBuffer()/clone() 的 Response，避免顶栏二次读 body 失败
+  function createReusableJsonResponse(bodyText, baseRes) {
+    const text = typeof bodyText === 'string' ? bodyText : JSON.stringify(bodyText || {});
+    const status = baseRes?.status || 200;
+    const statusText = baseRes?.statusText || 'OK';
+    const headers = new Headers(baseRes?.headers || { 'content-type': 'application/json; charset=utf-8' });
+    if (!headers.has('content-type')) headers.set('content-type', 'application/json; charset=utf-8');
+
+    const makeBodyStream = () => new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(text));
+        controller.close();
+      }
+    });
+
+    const res = new Response(makeBodyStream(), { status, statusText, headers });
+    // 覆盖一次性消费方法，始终可重复读
+    res.text = async () => text;
+    res.json = async () => JSON.parse(text);
+    res.arrayBuffer = async () => {
+      const enc = new TextEncoder().encode(text);
+      return enc.buffer.slice(enc.byteOffset, enc.byteOffset + enc.byteLength);
+    };
+    res.blob = async () => new Blob([text], { type: headers.get('content-type') || 'application/json' });
+    res.clone = () => createReusableJsonResponse(text, { status, statusText, headers });
+    return res;
   }
 
   async function parseFetchResponseJson(res) {
@@ -923,6 +1243,7 @@
     playurlUnlockInstalled = true;
 
     ensureFakeLoginCookie();
+    patchPlayerProfileQuality();
     clearPlayinfoSSR();
     installSpaPlayinfoReset();
 
@@ -939,11 +1260,26 @@
       unsafeWindow.fetch = async function(input, init) {
         let rawUrl = typeof input === 'string' ? input : (input?.url ?? '');
 
+        // 安全改写 player/wbi/v2：可多次读取 body，避免顶栏二次消费失败
+        if (isPlayerV2Url(rawUrl)) {
+          try {
+            ensureFakeLoginCookie();
+            const res = await originFetch(input, init);
+            const text = await res.clone().text();
+            const patched = patchPlayerV2JsonText(text);
+            if (patched === text) return res;
+            return createReusableJsonResponse(patched, res);
+          } catch (e) {
+            return originFetch(input, init);
+          }
+        }
+
         if (!isPlayurlRequestUrl(rawUrl)) {
           return originFetch(input, init);
         }
 
         try {
+          const requestGeneration = _videoGeneration;
           const url = new URL(rawUrl, location.href);
           if (url.hostname !== 'api.bilibili.com') return originFetch(input, init);
 
@@ -954,41 +1290,32 @@
             _playinfoKey = '';
           }
           ensureFakeLoginCookie();
+          patchPlayerProfileQuality();
 
           let { json: json1 } = await fetchPlayurlJson(rawUrl, true);
           json1 = normalizePlayurlQuality(json1);
           if (json1 && !isTrialOnlyPlayurl(json1)) {
-            writePlayinfo(json1, reqKey);
-            scheduleForceQuality(6, 500);
-            return new Response(JSON.stringify(json1), {
-              status: 200,
-              statusText: 'OK',
-              headers: { 'content-type': 'application/json; charset=utf-8' }
-            });
+            if (requestGeneration === _videoGeneration) {
+              writePlayinfo(json1, reqKey, requestGeneration);
+              scheduleForceQuality(8, 400);
+            }
+            return createReusableJsonResponse(JSON.stringify(json1));
           }
 
           console.warn('[Bilibili脚本] try_look 未达目标画质，重试 qn=' + getTargetQn());
           let { res: res2, json: json2 } = await fetchPlayurlJson(rawUrl, false);
           json2 = normalizePlayurlQuality(json2);
-          // 两路都有结果时取更高档
           const pick = (() => {
             if (!json1) return json2;
             if (!json2) return json1;
-            const maxOf = (j) => {
-              const d = j?.data;
-              if (d?.dash?.video?.length) return Math.max(...d.dash.video.map(v => v.id || 0));
-              return d?.quality || 0;
-            };
-            return maxOf(json2) >= maxOf(json1) ? json2 : json1;
+            return maxQnOfPlayurl(json2) >= maxQnOfPlayurl(json1) ? json2 : json1;
           })();
-          if (pick) writePlayinfo(pick, reqKey);
-          scheduleForceQuality(8, 600);
+          if (pick && requestGeneration === _videoGeneration) {
+            writePlayinfo(pick, reqKey, requestGeneration);
+            scheduleForceQuality(10, 450);
+          }
           if (!pick) return res2;
-          return new Response(JSON.stringify(pick), {
-            status: 200,
-            statusText: 'OK',
-            headers: { 'content-type': 'application/json; charset=utf-8' }
-          });
+          return createReusableJsonResponse(JSON.stringify(pick));
         } catch (e) {
           console.warn('[Bilibili脚本] playurl 解锁失败，回退:', e);
           return originFetch(input, init);
@@ -1012,11 +1339,61 @@
 
     XHR.prototype.send = function(...args) {
       const rawUrl = this.__bfqPlayurlUrl;
+
+      // XHR 改写 player/wbi/v2：在业务回调前改写 response（捕获阶段优先）
+      if (isPlayerV2Url(rawUrl)) {
+        try {
+          ensureFakeLoginCookie();
+          const xhr = this;
+          let patchedOnce = false;
+          const applyPatch = () => {
+            if (patchedOnce || xhr.readyState !== 4) return;
+            patchedOnce = true;
+            try {
+              const rawText = Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'responseText')
+                ? // 优先读原生 getter，避免已覆盖
+                  (() => {
+                    try { return xhr.responseText; } catch (e) { return ''; }
+                  })()
+                : xhr.responseText;
+              // 若已被我们 define 过，仍可读
+              const text = typeof rawText === 'string' ? rawText : '';
+              if (!text) return;
+              const patched = patchPlayerV2JsonText(text);
+              if (patched === text) return;
+              const asJson = (() => { try { return JSON.parse(patched); } catch (e) { return patched; } })();
+              Object.defineProperties(xhr, {
+                responseText: { get: () => patched, configurable: true },
+                response: {
+                  get: () => xhr.responseType === 'json' ? asJson : patched,
+                  configurable: true
+                }
+              });
+            } catch (e) {}
+          };
+          // 捕获阶段先于页面监听器
+          xhr.addEventListener('readystatechange', applyPatch, true);
+          xhr.addEventListener('load', applyPatch, true);
+          const prevOrsc = xhr.onreadystatechange;
+          xhr.onreadystatechange = function (...a) {
+            applyPatch();
+            if (typeof prevOrsc === 'function') return prevOrsc.apply(this, a);
+          };
+          const prevOnload = xhr.onload;
+          xhr.onload = function (...a) {
+            applyPatch();
+            if (typeof prevOnload === 'function') return prevOnload.apply(this, a);
+          };
+        } catch (e) {}
+        return originSend.apply(this, args);
+      }
+
       if (!isPlayurlRequestUrl(rawUrl)) {
         return originSend.apply(this, args);
       }
 
       const xhr = this;
+      const requestGeneration = _videoGeneration;
       (async () => {
         try {
           const url = new URL(rawUrl, location.href);
@@ -1030,6 +1407,7 @@
             _playinfoKey = '';
           }
           ensureFakeLoginCookie();
+          patchPlayerProfileQuality();
 
           let { json } = await fetchPlayurlJson(rawUrl, true);
           json = normalizePlayurlQuality(json);
@@ -1038,16 +1416,17 @@
             let json2;
             ({ json: json2 } = await fetchPlayurlJson(rawUrl, false));
             json2 = normalizePlayurlQuality(json2);
-            const maxOf = (j) => {
-              const d = j?.data;
-              if (d?.dash?.video?.length) return Math.max(...d.dash.video.map(v => v.id || 0));
-              return d?.quality || 0;
-            };
-            if (json2 && maxOf(json2) >= maxOf(json || {})) json = json2;
+            if (json2 && maxQnOfPlayurl(json2) >= maxQnOfPlayurl(json || {})) json = json2;
           }
-          writePlayinfo(json, reqKey);
-          scheduleForceQuality(8, 600);
-          emitXhrFakeResponse(xhr, json || {});
+          if (!hasPlayableMedia(json)) {
+            console.warn('[Bilibili脚本] XHR playurl 未获得有效媒体流，回退原请求');
+            return originSend.apply(xhr, args);
+          }
+          if (requestGeneration === _videoGeneration) {
+            writePlayinfo(json, reqKey, requestGeneration);
+            scheduleForceQuality(10, 450);
+          }
+          emitXhrFakeResponse(xhr, json);
         } catch (e) {
           console.warn('[Bilibili脚本] XHR playurl 解锁失败:', e);
           try { originSend.apply(xhr, args); } catch (e2) {}
@@ -1091,8 +1470,6 @@
     const emit = (xhr, type) => {
       const event = new unsafeWindow.Event(type);
       xhr.dispatchEvent(event);
-      const handler = xhr[`on${type}`];
-      if (typeof handler === 'function') handler.call(xhr, event);
     };
 
     const setReadyState = (xhr, state, readyState) => {
@@ -1103,6 +1480,8 @@
     XHR.prototype.open = function(method, url, async = true) {
       const fallback = getLiveAreaFallbackUrl(url);
       if (!fallback) return originOpen.apply(this, arguments);
+
+      originOpen.apply(this, arguments);
 
       fakeStates.set(this, {
         matched: true,
@@ -1119,7 +1498,6 @@
         responseURL: fallback.url,
         responseHeaders: 'content-type: application/json; charset=utf-8\r\n'
       });
-      setTimeout(() => emit(this, 'readystatechange'), 0);
     };
 
     XHR.prototype.setRequestHeader = function(name, value) {
@@ -1361,22 +1739,27 @@
     }
   }
 
-  async function getCommentPaginationData(offset) {
+  async function getCommentPaginationData(offset, signal) {
     const mode = commentCurrentSortType === COMMENT_SORT.HOT ? 3 : 2;
     const paginationStr = JSON.stringify({ offset: offset || '' });
     const wts = Math.floor(Date.now() / 1000);
     const qs = await getWbiQueryString({ oid: commentOid, type: commentType, mode, ps: COMMENT_PAGE_SIZE, pagination_str: paginationStr, wts });
-    const res = await nativePageFetch(`https://api.bilibili.com/x/v2/reply/wbi/main?${qs}`, { credentials: 'omit' });
+    const res = await nativePageFetch(`https://api.bilibili.com/x/v2/reply/wbi/main?${qs}`, { credentials: 'omit', signal });
     return res.json();
   }
 
   async function loadCommentPage(offset, appendToList) {
     if (commentIsLoading) return;
+    const generation = commentGeneration;
+    const requestOid = commentOid;
+    commentAbortController?.abort();
+    commentAbortController = new AbortController();
     commentIsLoading = true;
     const loader = document.getElementById('bili-comment-loader');
     if (loader) loader.style.display = 'block';
     try {
-      const data = await getCommentPaginationData(offset);
+      const data = await getCommentPaginationData(offset, commentAbortController.signal);
+      if (generation !== commentGeneration || requestOid !== commentOid) return;
       if (data.code !== 0) {
         console.error('[评论模块] API错误:', data.code, data.message);
         return;
@@ -1390,7 +1773,7 @@
       (data.data?.replies || []).forEach(r => appendCommentItem(r, false));
       commentTotalCount = Number(data.data?.cursor?.all_count || data.data?.cursor?.total || commentTotalCount || 0);
       const totalEl = document.getElementById('bili-total-reply') || document.querySelector('.comment-container .total-reply');
-      if (totalEl && commentTotalCount) totalEl.textContent = String(commentTotalCount);
+      if (totalEl) totalEl.textContent = String(commentTotalCount);
       const nextOffset = data.data?.cursor?.pagination_reply?.next_offset || '';
       const isEnd = !nextOffset || !!data.data?.cursor?.is_end;
       commentIsEnd = isEnd;
@@ -1405,10 +1788,13 @@
         }
       }
     } catch(e) {
+      if (e?.name === 'AbortError') return;
       console.error('[评论模块] 加载评论失败:', e);
     } finally {
-      commentIsLoading = false;
-      if (loader) loader.style.display = 'none';
+      if (generation === commentGeneration) {
+        commentIsLoading = false;
+        if (loader) loader.style.display = 'none';
+      }
     }
   }
 
@@ -1590,15 +1976,16 @@
       return host;
     }
 
-    // bili-comments / 非标准：只替换评论节点自身，或它的直接 parent（且必须安全）
-    const replaceTarget = host.tagName === 'BILI-COMMENTS' && host.parentElement && isSafeCommentHost(host.parentElement)
-      ? host.parentElement
-      : host;
-    if (!isSafeCommentHost(replaceTarget)) {
+    // bili-comments / 非标准：只替换评论节点自身，不清空包含其他组件的父节点
+    if (!isSafeCommentHost(host)) {
       throw new Error('评论容器不在安全挂载点，放弃替换以防误伤顶栏');
     }
-    replaceTarget.innerHTML = buildStandardCommentShellHtml();
-    return replaceTarget.querySelector('#bili-custom-comments') || replaceTarget;
+    const template = document.createElement('template');
+    template.innerHTML = buildStandardCommentShellHtml().trim();
+    const customRoot = template.content.firstElementChild;
+    if (!customRoot) throw new Error('评论容器创建失败');
+    host.replaceWith(customRoot);
+    return customRoot;
   }
 
   // 动态/opus：只拦截评论 tab 容器挂载 BILI-COMMENTS，不碰全局 appendChild
@@ -1621,9 +2008,66 @@
     }
   }
 
+  let duplicateOfficialCommentGuardInstalled = false;
+  function installDuplicateOfficialCommentGuard() {
+    if (duplicateOfficialCommentGuardInstalled) return;
+    duplicateOfficialCommentGuardInstalled = true;
+
+    const selector = [
+      'bili-comments',
+      '#commentapp',
+      '.bili-comment-container',
+      '.comment-wrap > .comment-container',
+      '.comment-wrapper .common'
+    ].join(',');
+
+    const isOurCommentRoot = (el) => {
+      if (!el || el.nodeType !== 1) return false;
+      return el.id === 'bili-custom-comments'
+        || el.id === 'bili-comment-list'
+        || !!el.closest?.('#bili-custom-comments')
+        || !!el.querySelector?.('#bili-custom-comments, #bili-comment-list');
+    };
+
+    const hideOfficialRoot = (el) => {
+      if (!el || el.nodeType !== 1 || isOurCommentRoot(el) || !isSafeCommentHost(el)) return;
+      el.dataset.bfqOfficialCommentHidden = '1';
+      el.setAttribute('aria-hidden', 'true');
+      el.style.setProperty('display', 'none', 'important');
+    };
+
+    const sweep = (root = document) => {
+      // 自绘区成功挂载后才隐藏官方区，避免挂载失败时页面无评论可看。
+      if (!document.getElementById('bili-comment-list')) return;
+      if (root.nodeType === 1 && root.matches?.(selector)) hideOfficialRoot(root);
+      root.querySelectorAll?.(selector).forEach(hideOfficialRoot);
+    };
+
+    sweep();
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        mutation.addedNodes.forEach((node) => {
+          if (node.nodeType === 1) sweep(node);
+        });
+      }
+    });
+    const start = () => {
+      if (document.body) observer.observe(document.body, { childList: true, subtree: true });
+    };
+    if (document.body) start();
+    else document.addEventListener('DOMContentLoaded', start, { once: true });
+  }
+
   async function initCommentModule() {
     if (!options.enableCommentUnlock) return;
     if (!isCommentDetailPage()) return;
+    if (isBilibiliLoggedIn()) return;
+
+    const target = await resolveCommentTarget();
+    if (!target?.oid) {
+      console.warn('[评论模块] 无法获取评论目标');
+      return;
+    }
 
     // 参考 DD1969：替换评论容器内部结构 + 自调 WBI API；不做全站 hide
     commentCurrentSortType = COMMENT_SORT.HOT;
@@ -1681,8 +2125,6 @@
 .login-tip,.fixed-reply-box{display:none!important}
 `);
 
-    setupOfficialCommentModuleBlocker();
-
     let customEl;
     try {
       customEl = await setupStandardCommentContainer();
@@ -1690,13 +2132,10 @@
       console.warn('[评论模块] 安全挂载失败，跳过评论重绘以免误伤顶栏:', e.message);
       return;
     }
+    setupOfficialCommentModuleBlocker();
+    installDuplicateOfficialCommentGuard();
 
-    const target = await resolveCommentTarget();
-    if (!target?.oid) {
-      console.warn('[评论模块] 无法获取评论目标');
-      return;
-    }
-
+    commentGeneration++;
     commentOid = target.oid;
     commentType = target.type;
     commentCreatorID = target.creator || 0;
@@ -1760,31 +2199,28 @@
     await loadCommentPage('', false);
 
     // SPA 切视频：只重填列表，不重跑全站 DOM hide
-    let lastOid = commentOid;
+    let lastCommentKey = `${commentType}:${commentOid}`;
     setInterval(async () => {
-      let newOid;
-      try {
-        const state = unsafeWindow.__INITIAL_STATE__;
-        if (state?.aid) newOid = String(state.aid);
-        else if (state?.videoData?.aid) newOid = String(state.videoData.aid);
-        else {
-          const bvMatch = location.pathname.match(/BV[\w]+/i);
-          if (bvMatch) newOid = b2a(bvMatch[0]);
-        }
-      } catch (e) {}
-
-      if (!newOid || newOid === lastOid) return;
-      lastOid = newOid;
-      commentOid = newOid;
-      const state = unsafeWindow.__INITIAL_STATE__;
-      commentCreatorID = state?.upData?.mid || state?.videoData?.owner?.mid || 0;
-      console.log(`[评论模块] 检测到视频切换，新 oid=${newOid}`);
+      const nextTarget = await resolveCommentTarget();
+      if (!nextTarget?.oid) return;
+      const nextKey = `${nextTarget.type}:${nextTarget.oid}`;
+      if (nextKey === lastCommentKey) return;
+      lastCommentKey = nextKey;
+      commentGeneration++;
+      commentAbortController?.abort();
+      commentAbortController = null;
+      commentIsLoading = false;
+      commentOid = nextTarget.oid;
+      commentType = nextTarget.type;
+      commentCreatorID = nextTarget.creator || 0;
+      console.log(`[评论模块] 检测到页面切换，新 oid=${commentOid}, type=${commentType}`);
 
       // 若壳被 SPA 拆掉，仅在安全 host 上重建
       if (!document.getElementById('bili-comment-list')) {
         try {
           customEl = await setupStandardCommentContainer();
           bindSortAndPager(customEl);
+          installDuplicateOfficialCommentGuard();
         } catch (e) {
           console.warn('[评论模块] SPA 重建跳过:', e.message);
           return;
@@ -1799,6 +2235,8 @@
       commentCurrentPage = 0;
       commentTotalCount = 0;
       commentIsEnd = false;
+      const totalEl = document.getElementById('bili-total-reply');
+      if (totalEl) totalEl.textContent = '0';
       const list = document.getElementById('bili-comment-list');
       if (list) list.innerHTML = '';
       const endEl = document.getElementById('bili-comment-end');
@@ -2084,6 +2522,7 @@
         };
 
         media.addEventListener('pause', () => {
+          if (media !== currentMedia || !media.isConnected) return;
           if (!hasPlaybackStarted) return;
           if (allowInternalPause) return;
 
@@ -2097,12 +2536,14 @@
         }, true);
 
         media.addEventListener('play', () => {
+          if (media !== currentMedia || !media.isConnected) return;
           hasPlaybackStarted = true;
           isUserPaused = false;
           restoreUnmute(media, 'play-event');
         }, true);
 
         media.addEventListener('playing', () => {
+          if (media !== currentMedia || !media.isConnected) return;
           restoreUnmute(media, 'playing-event');
         }, true);
 

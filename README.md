@@ -1,7 +1,7 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Version](https://img.shields.io/badge/version-4.0.0--alpha.14-orange)
+![Version](https://img.shields.io/badge/version-4.0.0--alpha.15-orange)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 
 ## 📌 简介
@@ -12,7 +12,7 @@
 
 | 模式 | 实现方式 | 副作用 |
 |---|---|---|
-| **协议级解锁**（v4 默认）| 伪造 `DedeUserID` cookie + 清空 `__playinfo__` SSR + 重签 WBI `playurl`（`try_look=1` + `qn=80`），**服务端直接出 1080P 全片流** | 无顶栏/搜索栏消失、无 30 秒截断 |
+| **协议级解锁**（v4 默认）| 伪造 `DedeUserID` cookie + 清空 `__playinfo__` SSR + 重签 WBI `playurl`（`try_look=1` + `qn=80`）+ 安全改写 `player/wbi/v2`，**服务端直接出 1080P 全片流**；SPA 切视频等待 state 对齐后重签 | 无顶栏/搜索栏消失、无 30 秒截断 |
 | **客户端兼容**（一键回退）| 延长试用倒计时 + 自动点击试用按钮 + 画质兜底拔高 + 窄化 `Object.defineProperty` 劫持 | 沿用 v3.5.6 修复，仅作为兜底 |
 
 您是否也遇到这些烦恼？
@@ -106,6 +106,15 @@
 4. 直播分区接口异常时，将 `/xlive/web-interface/v1/second/getList` 兜底到 `/room/v3/area/getRoomList` 并转换数据结构
 
 ## 🔄 更新日志
+
+### v4.0.0-alpha.15 (2026-07-19)
+- 🐛 **修复**：SPA 切推荐视频卡在 360P，必须手动刷新才出 1080P
+  - 等待 `__INITIAL_STATE__` 与 URL BV 对齐后再主动 WBI 重签 playurl，避免用旧 aid/cid 抢跑
+  - 安全改写 `/x/player/wbi/v2` 登录态字段（`login_mid`/`need_login_subtitle`），XHR 只改 `responseText` 不重建 body
+  - `normalizePlayurlQuality` 清除 `need_login`/`need_vip`，对齐 `support_formats`，菜单可点 1080P
+  - 同步 `localStorage.bpx_player_profile` 默认画质；高清流写入后尝试 `updatePlayurl/setQuality`
+  - 掉落监听在持续低档时节流重签 playurl
+- 📚 **README**：版本 badge → alpha.15
 
 ### v4.0.0-alpha.14 (2026-07-19)
 - 🐛 **修复**：刷新后默认静音——防暂停自动 `play()` 触发浏览器自动播放静音策略
