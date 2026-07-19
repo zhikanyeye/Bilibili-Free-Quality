@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      4.0.0-alpha.16
-// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P，SPA 切视频等待 state 对齐后重签 + 安全改写 player/wbi/v2 登录态；客户端兼容模式自动试用画质 + 拦截画质劫持 · 拦 rcmd 清 buvid3 防登录弹窗 · 彻底屏蔽自动暂停 · 评论按 DD1969 方式只替换评论容器（不全站 hide，保护顶栏）· 播放器底部悬浮倍速按钮（借鉴 globalSpeed GhostMode 强制 playbackRate 生效）· 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 无远程样式依赖
+// @version      4.0.0-alpha.18
+// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P，SPA 切视频等待 state 对齐后重签 + 安全改写 player/wbi/v2 登录态；客户端兼容模式自动试用画质 + 拦截画质劫持 · 拦 rcmd 清 buvid3 防登录弹窗 · 彻底屏蔽自动暂停 · 评论按 DD1969 方式只替换评论容器（不全站 hide，保护顶栏）· 播放器原生控制栏倍速按钮（借鉴 globalSpeed GhostMode 强制 playbackRate 生效）· 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 无远程样式依赖
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -2260,6 +2260,9 @@
     initCommentModule();
   }
 
+  // 倍速控制属于通用播放器功能，登录与未登录状态都安装。
+  installPlaybackRateController();
+
   /* ========== 1. 如果已登录直接退出 ========== */
   if (isBilibiliLoggedIn()) return;
 
@@ -2863,14 +2866,15 @@
       if (Math.abs(cur - target) > 0.001) ogDesc.set.call(m, target);
     }, true);
 
-    /* ===== 悬浮按钮（播放器底部右侧） ===== */
+    /* ===== 倍速按钮（播放器原生右侧控制栏） ===== */
     GM_addStyle(`
-#bfq-speed-btn{position:absolute;right:148px;bottom:48px;z-index:1000;display:flex;align-items:center;gap:4px;padding:0 10px;height:36px;border-radius:18px;background:rgba(0,0,0,.5);color:#fff;cursor:pointer;font-size:13px;user-select:none;transition:background .2s;backdrop-filter:blur(2px)}
-#bfq-speed-btn:hover{background:rgba(0,0,0,.7)}
-:fullscreen #bfq-speed-btn,:fullscreen .bfq-speed-pop,:-webkit-full-screen #bfq-speed-btn,:-webkit-full-screen .bfq-speed-pop{display:none!important}
+#bfq-speed-control{position:relative;display:flex;align-items:center;align-self:stretch;height:100%;flex:0 0 auto}
+#bfq-speed-btn{display:flex;align-items:center;justify-content:center;gap:4px;padding:0 8px;height:100%;min-width:48px;color:#fff;cursor:pointer;font-size:13px;user-select:none;white-space:nowrap;opacity:.9;transition:opacity .2s}
+#bfq-speed-btn:hover{opacity:1}
+:fullscreen #bfq-speed-control,:-webkit-full-screen #bfq-speed-control{display:none!important}
 #bfq-speed-btn .bfq-speed-label{font-weight:600;letter-spacing:.5px}
 #bfq-speed-btn .bfq-speed-chev{font-size:10px;opacity:.7;margin-left:2px}
-.bfq-speed-pop{position:absolute;bottom:88px;right:148px;z-index:1001;min-width:160px;padding:8px 0;background:#fff;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.25);font-family:sans-serif;display:none}
+.bfq-speed-pop{position:absolute;bottom:calc(100% + 8px);right:0;z-index:1001;min-width:160px;padding:8px 0;background:#fff;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.25);font-family:sans-serif;display:none}
 .bfq-speed-pop.show{display:block}
 .bfq-speed-pop .bfq-row{padding:8px 14px;font-size:14px;color:#333;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
 .bfq-speed-pop .bfq-row:hover{background:#f4f5f7}
@@ -2899,18 +2903,31 @@
       return `${r.toFixed(2).replace(/0$/, '')}x`;
     };
 
-    const findPlayer = () => {
-      return document.querySelector('.bpx-player-container') ||
-        document.querySelector('.bilibili-player-video-wrap')?.closest('.bilibili-player') ||
-        null;
+    const getPlayerUi = () => {
+      const player = document.querySelector('.bpx-player-container') ||
+        document.querySelector('.bilibili-player-video-wrap')?.closest('.bilibili-player');
+      if (!player) return null;
+      const controls = player.querySelector('.bpx-player-control-bottom-right') ||
+        player.querySelector('.bilibili-player-video-control-bottom-right');
+      const video = player.querySelector('video');
+      return { player, controls, video };
     };
 
+    const isPlayerUiReady = (ui) => {
+      if (!ui?.controls || !ui.video || document.hidden) return false;
+      const rect = ui.controls.getBoundingClientRect();
+      return ui.controls.isConnected && ui.video.isConnected &&
+        ui.video.readyState >= HTMLMediaElement.HAVE_METADATA &&
+        rect.width > 0 && rect.height > 0;
+    };
+
+    let controlEl = null;
     let btnEl = null;
     let popEl = null;
 
     const syncFullscreenUi = () => {
       const isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
-      if (btnEl) btnEl.style.display = isFullscreen ? 'none' : '';
+      if (controlEl) controlEl.style.display = isFullscreen ? 'none' : '';
       if (isFullscreen && popEl) popEl.classList.remove('show');
     };
 
@@ -3002,33 +3019,59 @@
     };
 
     const mount = () => {
-      if (btnEl && document.contains(btnEl)) return;
-      const player = findPlayer();
-      if (!player) return;
+      const ui = getPlayerUi();
+      if (!isPlayerUiReady(ui)) return;
+      if (controlEl?.isConnected && controlEl.parentElement === ui.controls) return;
+
+      controlEl?.remove();
+      controlEl = document.createElement('div');
+      controlEl.id = 'bfq-speed-control';
       btnEl = buildBtn();
       popEl = document.createElement('div');
       popEl.className = 'bfq-speed-pop';
       refreshPop();
-      player.style.position = player.style.position || 'relative';
-      player.appendChild(btnEl);
-      player.appendChild(popEl);
+      controlEl.appendChild(btnEl);
+      controlEl.appendChild(popEl);
+      ui.controls.prepend(controlEl);
       syncFullscreenUi();
       btnEl.addEventListener('click', (e) => {
         e.stopPropagation();
         popEl.classList.toggle('show');
       });
       popEl.addEventListener('click', onPopClick);
-      document.addEventListener('click', (e) => {
-        if (!popEl.contains(e.target) && e.target !== btnEl && !btnEl.contains(e.target)) popEl.classList.remove('show');
-      }, true);
       console.log('[Bilibili脚本] 倍速按钮已挂载');
     };
 
-    const mountObserver = new MutationObserver(() => mount());
-    const startMountWatch = () => {
-      mount();
-      try { mountObserver.observe(document.body, { childList: true, subtree: false }); } catch (e) {}
+    document.addEventListener('click', (e) => {
+      if (popEl && btnEl && !popEl.contains(e.target) && !btnEl.contains(e.target)) popEl.classList.remove('show');
+    }, true);
+
+    let mountTimer = null;
+    const scheduleMount = () => {
+      if (mountTimer) return;
+      mountTimer = setTimeout(() => {
+        mountTimer = null;
+        mount();
+        applyToAllMedia();
+      }, 120);
     };
+
+    const mountObserver = new MutationObserver((mutations) => {
+      const currentControls = getPlayerUi()?.controls;
+      const controlChanged = !controlEl?.isConnected || controlEl.parentElement !== currentControls;
+      const videoAdded = mutations.some((mutation) => [...mutation.addedNodes].some((node) =>
+        node.nodeType === 1 && (node.matches?.('video') || node.querySelector?.('video'))
+      ));
+      if (controlChanged || videoAdded) scheduleMount();
+    });
+    const startMountWatch = () => {
+      scheduleMount();
+      try { mountObserver.observe(document.body, { childList: true, subtree: true }); } catch (e) {}
+    };
+
+    document.addEventListener('visibilitychange', scheduleMount);
+    document.addEventListener('loadedmetadata', scheduleMount, true);
+    unsafeWindow.navigation?.addEventListener?.('navigate', scheduleMount);
 
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', startMountWatch, { once: true });
@@ -3038,8 +3081,6 @@
     setTimeout(applyToAllMedia, 800);
     setTimeout(applyToAllMedia, 2500);
   }
-
-  installPlaybackRateController();
 
   /* ========== 4. 设置面板 ========== */
   GM_addStyle(`
