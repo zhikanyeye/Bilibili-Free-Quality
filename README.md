@@ -1,7 +1,7 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Version](https://img.shields.io/badge/version-4.0.0--alpha.10-orange)
+![Version](https://img.shields.io/badge/version-4.0.0--alpha.12-orange)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 
 ## 📌 简介
@@ -106,6 +106,18 @@
 4. 直播分区接口异常时，将 `/xlive/web-interface/v1/second/getList` 兜底到 `/room/v3/area/getRoomList` 并转换数据结构
 
 ## 🔄 更新日志
+
+### v4.0.0-alpha.12 (2026-07-19)
+- 🐛 **修复**：评论重绘误伤顶栏——学习 DD1969（greasyfork/473498）：只替换评论容器内部，删除全站 `display:none` 守护与宽选择器 hide
+- 🛡️ **安全挂载**：`isSafeCommentHost` 禁止替换 `#app`/顶栏/body；动态页仅局部拦截 `BILI-COMMENTS` appendChild
+- 📚 **README**：版本 badge → alpha.12
+
+### v4.0.0-alpha.11 (2026-07-19)
+- 🛡️ **安全**：移除 GreasyFork 远程 `@require` 样式依赖，避免安装/更新时自动下载第三方脚本
+- 🛡️ **安全**：评论渲染对 mid/rpid 做数字校验，头像/表情 URL 仅允许 bilibili CDN
+- 🐛 **修复**：SPA 切视频（推荐栏）默认 360P——`history` + `aid/cid` 双检测，清 playinfo 后多轮 `requestQuality` 强制目标档
+- 🐛 **修复**：媒体 `play/loadeddata` 事件与画质掉落监听补强，减少需手动刷新才出 1080P
+- 📚 **README**：版本 badge → alpha.11
 
 ### v4.0.0-alpha.10 (2026-07-19)
 - 🔄 **评论**：取消协议级 reply 劫持，统一回到纯重绘评论（WBI 自调 API + 隐藏官方组件 + 全站守护）
