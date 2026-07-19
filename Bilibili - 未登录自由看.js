@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      4.0.0-alpha.8
+// @version      4.0.0-alpha.9
 // @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P；客户端兼容模式自动试用画质 + 拦截画质劫持，fallback 兜底拔高 · 拦 rcmd 清 buvid3 防登录弹窗（DD1969 思路）· 彻底屏蔽自动暂停 · WBI 签名自调评论 API，视频/动态/专栏评论完整解锁 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P
 // @license      GPL-3.0
 // @author       zhikanyeye
@@ -167,12 +167,49 @@
       || rawUrl.includes('/pgc/player/web/v2/playurl');
   }
 
-  // SPA 切视频时清空旧高清缓存，强制重新走 playurl 拦截
+  // 协议级模式下也主动 requestQuality，避免 SPA 切推荐后卡在 360P
+  function forcePlayerTargetQuality(reason = 'protocol') {
+    try {
+      const map = { 1080: 80, 720: 64, 480: 32, 360: 16 };
+      const target = map[options.preferQuality] || 80;
+      const player = unsafeWindow.player;
+      if (!player?.requestQuality) return false;
+      const supported = player.getSupportedQualityList?.();
+      if (Array.isArray(supported) && supported.length && !supported.includes(target)) {
+        const best = Math.max(...supported.filter(q => q <= target), ...supported);
+        Promise.resolve(player.requestQuality(best)).catch(() => {});
+        return true;
+      }
+      Promise.resolve(player.requestQuality(target)).catch(() => {});
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function scheduleForceQuality(times = 6, gap = 800) {
+    let n = 0;
+    const tick = () => {
+      forcePlayerTargetQuality('spa-retry-' + n);
+      n += 1;
+      if (n < times) setTimeout(tick, gap);
+    };
+    setTimeout(tick, 300);
+  }
+
+  // SPA 切视频时清空旧高清缓存，强制重新走 playurl 拦截并拔高画质
   function installSpaPlayinfoReset() {
     const reset = () => {
       _playinfoCache = null;
       _playinfoKey = '';
       ensureFakeLoginCookie();
+      try {
+        const s = document.createElement('script');
+        s.textContent = 'window.playurlSSRData = {}';
+        document.documentElement.appendChild(s);
+        document.documentElement.removeChild(s);
+      } catch (e) {}
+      scheduleForceQuality();
     };
     const wrapHistory = (type) => {
       const origin = history[type];
@@ -609,6 +646,9 @@
       _playinfoCache = json;
       try { unsafeWindow.__playinfo__ = json; } catch (e) {}
       _playinfoWriteAllow = false;
+      // 写入高清流后主动切画质，覆盖 SPA 切推荐后默认 360P
+      setTimeout(() => forcePlayerTargetQuality('after-playinfo'), 200);
+      setTimeout(() => forcePlayerTargetQuality('after-playinfo-2'), 1200);
     } catch (e) {
       _playinfoWriteAllow = false;
     }
@@ -1180,13 +1220,8 @@
     if (!options.enableCommentUnlock) return;
     if (!isCommentDetailPage()) return;
 
-    // 视频页：只做协议级解锁，保留官方评论组件，避免自绘 hide 误伤顶栏
-    if (isVideoCommentPage() && !needsCustomCommentRender()) {
-      installReplyProtocolUnlock();
-      return;
-    }
-
-    // 动态/专栏：官方组件常挂，走自绘 fallback（安全挂载）
+    // 协议级 + 自绘并存：协议级保证官方组件也能拉全量；自绘保证未登录可见评论区
+    // 挂载用 isSafeCommentRoot，避免 hide 误伤顶栏
     installReplyProtocolUnlock();
 
     commentCurrentSortType = COMMENT_SORT.HOT;
@@ -1453,7 +1488,11 @@
     '.bili-mini-mask',
     '.bili-mini-login-mask',
     '.mini-login-mask',
-    '.bili-login-v2-mask'
+    '.bili-login-v2-mask',
+    '.login-panel-mask',
+    '.v-popover-wrap .login-panel-popover',
+    '[class*="login-mask"]',
+    '[class*="mini-login-mask"]'
   ].join(',');
 
   const LOGIN_POPUP_SELECTOR = [
@@ -1461,16 +1500,23 @@
     '.mini-login',
     '.bili-login-v2-container',
     '.passport-login-pop',
-    '.passport-login-container'
+    '.passport-login-container',
+    '.login-panel-popover',
+    '.bili-mini-login-right-panel',
+    '.login-panel',
+    '[class*="mini-login"]',
+    '[class*="login-panel"]'
   ].join(',');
 
-  // —— 播放器内部登录提示 ——
   const PLAYER_LOGIN_SELECTOR = [
     '.passport-login-tip-container',
-    '.login-tip'
+    '.login-tip',
+    '.bpx-player-toast-confirm-login',
+    '.bpx-player-ending-content-login',
+    '[class*="login-tip"]'
   ].join(',');
 
-  /* 2-2 CSS：顶栏保持最高层级，登录层隐藏 */
+  /* 2-2 CSS：顶栏最高层级 + 更广登录层隐藏（仍避开顶栏内部） */
   GM_addStyle(`
     .bili-header, #bili-header-container, .bili-header__bar, #biliMainHeader, .fixed-header {
       position: relative !important; z-index: 100001 !important;
@@ -1482,8 +1528,12 @@
       pointer-events: auto !important; visibility: visible !important; opacity: 1 !important;
     }
     .bili-mini-mask, .bili-mini-login-mask, .mini-login-mask, .bili-login-v2-mask,
+    .login-panel-mask, [class*="login-mask"], [class*="mini-login-mask"],
     body > .bili-mini-login, body > .mini-login, body > .bili-login-v2-container,
-    body > .passport-login-pop, body > .passport-login-container {
+    body > .passport-login-pop, body > .passport-login-container,
+    body > .login-panel-popover, body > .login-panel,
+    .bpx-player-container .passport-login-tip-container,
+    .bpx-player-container .login-tip {
       display: none !important; pointer-events: none !important;
       opacity: 0 !important; visibility: hidden !important;
     }
@@ -1504,29 +1554,35 @@
 
   const isViewportLoginLayer = (el) => {
     if (!el || el.nodeType !== 1 || isInHeader(el)) return false;
-    if (el.matches?.(LOGIN_MASK_SELECTOR)) return true;
-    if (!el.matches?.(LOGIN_POPUP_SELECTOR)) return false;
+    // 顶栏登录按钮本身不隐藏
+    if (el.closest?.('.header-login-entry, .header-avatar-wrap, .right-entry')) return false;
+    if (el.matches?.(LOGIN_MASK_SELECTOR) || el.matches?.(LOGIN_POPUP_SELECTOR)) return true;
+
+    const cls = typeof el.className === 'string' ? el.className : '';
+    const looksLogin = /mini-login|login-panel|login-mask|passport-login|bili-login/i.test(cls);
+    if (!looksLogin && !el.matches?.(PLAYER_LOGIN_SELECTOR)) return false;
 
     const style = unsafeWindow.getComputedStyle?.(el) || getComputedStyle(el);
     const rect = el.getBoundingClientRect?.();
     const isLayerPosition = ['fixed', 'absolute', 'sticky'].includes(style.position) || el.parentElement === document.body;
-    const isLargeLayer = rect && rect.width >= Math.min(360, unsafeWindow.innerWidth * 0.45) && rect.height >= Math.min(240, unsafeWindow.innerHeight * 0.25);
+    const isLargeLayer = rect && rect.width >= Math.min(280, unsafeWindow.innerWidth * 0.3) && rect.height >= Math.min(160, unsafeWindow.innerHeight * 0.18);
     const hasLoginForm = !!el.querySelector?.('input[type="password"], input[placeholder*="密码"], input[placeholder*="登录"], button, [class*="login"]');
-    return isLayerPosition && (isLargeLayer || hasLoginForm);
+    return isLayerPosition && (isLargeLayer || hasLoginForm || looksLogin);
   };
 
   const hideLoginLayersInNode = (node) => {
     if (!node || node.nodeType !== 1) return;
     if (isViewportLoginLayer(node)) hideElement(node);
-    node.querySelectorAll?.(`${LOGIN_MASK_SELECTOR},${LOGIN_POPUP_SELECTOR}`)?.forEach((el) => {
-      if (isViewportLoginLayer(el)) hideElement(el);
+    node.querySelectorAll?.(`${LOGIN_MASK_SELECTOR},${LOGIN_POPUP_SELECTOR},${PLAYER_LOGIN_SELECTOR}`)?.forEach((el) => {
+      if (isInHeader(el)) return;
+      if (el.closest?.('.header-login-entry, .header-avatar-wrap, .right-entry')) return;
+      hideElement(el);
     });
-    const isInPlayer = (el) => !!el.closest(
-      '.bpx-player-container, .bpx-player-video-area, .bpx-player-video-wrap, #bilibili-player'
-    );
-    if (node.matches?.(PLAYER_LOGIN_SELECTOR) && isInPlayer(node)) hideElement(node);
-    node.querySelectorAll?.(PLAYER_LOGIN_SELECTOR)?.forEach((el) => {
-      if (isInPlayer(el)) hideElement(el);
+    // 类名模糊匹配：覆盖 B 站改版后的登录层
+    node.querySelectorAll?.('[class*="mini-login"], [class*="login-mask"], [class*="login-panel"], [class*="passport-login"]')?.forEach((el) => {
+      if (isInHeader(el)) return;
+      if (el.closest?.('.header-login-entry, .header-avatar-wrap, .right-entry')) return;
+      if (isViewportLoginLayer(el) || /mask|panel|pop|modal|dialog/i.test(el.className || '')) hideElement(el);
     });
   };
 
