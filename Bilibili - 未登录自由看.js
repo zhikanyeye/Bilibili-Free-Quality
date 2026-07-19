@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      4.0.0-alpha.7
+// @version      4.0.0-alpha.8
 // @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P；客户端兼容模式自动试用画质 + 拦截画质劫持，fallback 兜底拔高 · 拦 rcmd 清 buvid3 防登录弹窗（DD1969 思路）· 彻底屏蔽自动暂停 · WBI 签名自调评论 API，视频/动态/专栏评论完整解锁 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P
 // @license      GPL-3.0
 // @author       zhikanyeye
