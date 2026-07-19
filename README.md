@@ -1,7 +1,7 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Version](https://img.shields.io/badge/version-4.0.0--alpha.12-orange)
+![Version](https://img.shields.io/badge/version-4.0.0--alpha.14-orange)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 
 ## 📌 简介
@@ -106,6 +106,21 @@
 4. 直播分区接口异常时，将 `/xlive/web-interface/v1/second/getList` 兜底到 `/room/v3/area/getRoomList` 并转换数据结构
 
 ## 🔄 更新日志
+
+### v4.0.0-alpha.14 (2026-07-19)
+- 🐛 **修复**：刷新后默认静音——防暂停自动 `play()` 触发浏览器自动播放静音策略
+  - 记录用户音量意图；`play/playing/loadedmetadata` 后恢复非静音
+  - 用户手势（点击/按键）时强制取消脚本触发的静音
+  - 自动恢复播放改为 `safePlay`，避免反复把音量打到 0
+- 📚 **README**：版本 badge → alpha.14
+
+### v4.0.0-alpha.13 (2026-07-19)
+- ✨ **新增**：播放器底部悬浮倍速按钮，支持 0.5/0.75/1/1.25/1.5/2/2.5/3 预设 + 0.07-16 自定义输入
+- 🛡️ **强制生效**：借鉴 polywock/globalSpeed GhostMode 机制——原型级 `HTMLMediaElement.prototype.playbackRate` setter 拦截 + 校验回写，绕过 B 站对 `playbackRate` 的自定义 setter 限制
+- 🔄 **持久守护**：周期间断 `setInterval` + MutationObserver + ratechange 事件三重保护，B 站 SPA 切集把倍速 reset 回 1 时自动校正
+- ⚙️ **可关闭**：弹窗内「启用倍速强制」开关，默认开；与已装的 globalSpeed 共存（幂等跳过）
+- 💾 **记忆**：倍速与自定义值通过 `GM_setValue` 持久化
+- 📚 **README**：版本 badge → alpha.13
 
 ### v4.0.0-alpha.12 (2026-07-19)
 - 🐛 **修复**：评论重绘误伤顶栏——学习 DD1969（greasyfork/473498）：只替换评论容器内部，删除全站 `display:none` 守护与宽选择器 hide
