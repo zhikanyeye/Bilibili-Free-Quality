@@ -1,7 +1,7 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Version](https://img.shields.io/badge/version-4.0.0--alpha.8-orange)
+![Version](https://img.shields.io/badge/version-4.0.0--alpha.9-orange)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 
 ## 📌 简介
@@ -106,6 +106,12 @@
 4. 直播分区接口异常时，将 `/xlive/web-interface/v1/second/getList` 兜底到 `/room/v3/area/getRoomList` 并转换数据结构
 
 ## 🔄 更新日志
+
+### v4.0.0-alpha.9 (2026-07-19)
+- 🐛 **修复**：视频页评论区不可见——恢复安全自绘评论（协议级 + 自绘并存），挂载仍用 isSafeCommentRoot 保护顶栏
+- 🛡️ **增强**：登录弹窗屏蔽选择器加宽（mask/panel/passport/模糊 class），仍避开顶栏登录入口
+- 🐛 **修复**：详情页点推荐切视频默认 360P——SPA 切换后清 playinfo + 多次 requestQuality 强制目标画质
+- 📚 **README**：版本 badge → alpha.9
 
 ### v4.0.0-alpha.8 (2026-07-19)
 - 🐛 **修复**：评论自绘误伤视频页顶栏——视频/list/festival 改为协议级评论（`credentials:omit`），保留官方 `bili-comments`，不再 hide 官方评论 DOM
