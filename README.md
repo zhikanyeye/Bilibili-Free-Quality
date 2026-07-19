@@ -1,11 +1,11 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/github/license/zhikanyeye/Bilibili-Free-Quality.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Version: alpha.18](https://img.shields.io/badge/version-alpha.18-orange.svg)](#更新日志)
+[![Version: alpha.19](https://img.shields.io/badge/version-alpha.19-orange.svg)](#更新日志)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 [![jsDelivr](https://img.shields.io/badge/jsDelivr-CDN-blue.svg)](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@c817deb/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js)
 
-当前版本：`4.0.0-alpha.18`
+当前版本：`4.0.0-alpha.19`
 
 ## 📌 简介
 
@@ -37,6 +37,7 @@
 - ✅ **直播分区连续加载**：未登录下拉分区列表时自动兜底旧接口，避免一直卡在加载中
 - ✅ **尊重自动播放设置**：防暂停逻辑只在已开始播放后恢复，不再强制初始自动播放
 - ✅ **全登录态倍速播放**：登录与未登录均在播放器原生控制栏显示倍速按钮，支持预设和自定义倍速；全屏时自动隐藏
+- ✅ **左右快速跳转**：点击视频区后短暂显示左右小图标，默认后退 10 秒、前进 15 秒，支持自定义并持久保存
 - ✅ **可视化面板**，一键切换 1080P / 720P / 480P / 360P，并可切换解锁模式
 - ✅ **Edge / Chrome / Firefox** 全平台兼容
 - ✅ **登录态隔离**：登录后仅保留通用倍速功能，未登录解锁、评论重绘和防登录逻辑自动停用
@@ -80,6 +81,7 @@ https://cdn.jsdelivr.net/gh/user/repo@version/file
 - **直播分区连续加载**：开 / 关（未登录下拉分区列表时启用接口兜底）
 - **倍速播放**：0.5 / 0.75 / 1 / 1.25 / 1.5 / 2 / 2.5 / 3 倍预设，支持 0.07-16 自定义输入
 - **倍速强制**：开 / 关；已选择倍速通过 `GM_setValue` 持久保存，SPA 切视频后自动恢复
+- **左右跳转**：后退默认 10 秒、前进默认 15 秒，可在倍速弹层中分别设置 1-300 秒
 - **登录后行为**：保留倍速控制器，其余未登录专属功能自动停用
 
 ## 📊 脚本信息
@@ -129,6 +131,12 @@ https://cdn.jsdelivr.net/gh/user/repo@version/file
 5. 倍速控制器在登录与未登录状态均安装，等待播放器稳定后接入原生右侧控制栏；SPA 重建播放器时自动重挂载
 
 ## 🔄 更新日志
+
+### v4.0.0-alpha.19 (2026-07-19)
+- **左右跳转**：点击视频区后显示后退与前进图标，默认后退 10 秒、前进 15 秒
+- **自定义时间**：倍速弹层新增左右跳转秒数设置，范围 1-300 秒并通过 `GM_setValue` 持久保存
+- **低干扰交互**：仅点击图标执行跳转，按钮显示 2 秒后自动淡出，标准全屏和网页全屏自动隐藏
+- **SPA 兼容**：播放器视频层重建后自动重新挂载跳转按钮
 
 ### v4.0.0-alpha.18 (2026-07-19)
 - **原生控制栏**：倍速按钮接入播放器右侧控制栏，跟随宿主布局和控制栏显隐

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      4.0.0-alpha.18
-// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P，SPA 切视频等待 state 对齐后重签 + 安全改写 player/wbi/v2 登录态；客户端兼容模式自动试用画质 + 拦截画质劫持 · 拦 rcmd 清 buvid3 防登录弹窗 · 彻底屏蔽自动暂停 · 评论按 DD1969 方式只替换评论容器（不全站 hide，保护顶栏）· 播放器原生控制栏倍速按钮（借鉴 globalSpeed GhostMode 强制 playbackRate 生效）· 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 无远程样式依赖
+// @version      4.0.0-alpha.19
+// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P，SPA 切视频等待 state 对齐后重签 + 安全改写 player/wbi/v2 登录态；客户端兼容模式自动试用画质 + 拦截画质劫持 · 拦 rcmd 清 buvid3 防登录弹窗 · 彻底屏蔽自动暂停 · 评论按 DD1969 方式只替换评论容器（不全站 hide，保护顶栏）· 播放器原生控制栏倍速按钮 + 点击视频后显示前进/后退按钮 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 无远程样式依赖
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -53,7 +53,9 @@
     enableProtocolUnlock: GM_getValue('enableProtocolUnlock', true),  // false 时回退旧客户端架构
     playbackRate: Number(GM_getValue('playbackRate', 1)) || 1,
     customPlaybackRate: Number(GM_getValue('customPlaybackRate', 1.5)) || 1.5,
-    enablePlaybackRateControl: GM_getValue('enablePlaybackRateControl', true)
+    enablePlaybackRateControl: GM_getValue('enablePlaybackRateControl', true),
+    seekBackwardSeconds: Number(GM_getValue('seekBackwardSeconds', 10)) || 10,
+    seekForwardSeconds: Number(GM_getValue('seekForwardSeconds', 15)) || 15
   };
 
   const PAGE_RE = {
@@ -2793,7 +2795,6 @@
   /* 倍速控制模块（参考 polywock/globalSpeed 的 GhostMode：原型级 playbackRate setter 拦截 + 校验回写，强制绕过站点自定义 setter）
      MIT License, Copyright (c) polywock — 仅借鉴核心兼容机制，缩窄到 B 站 media 元素 */
   function installPlaybackRateController() {
-    if (!options.enablePlaybackRateControl) return;
     const isVideoPage = PAGE_RE.video.test(location.href) || PAGE_RE.festival.test(location.href) || PAGE_RE.list.test(location.href);
     const isLivePage = PAGE_RE.live.test(location.href);
 
@@ -2833,7 +2834,7 @@
     });
 
     const applyToAllMedia = () => {
-      if (options.playbackRate === 1) return;
+      if (!options.enablePlaybackRateControl || options.playbackRate === 1) return;
       document.querySelectorAll('video, audio').forEach(m => {
         if (!isBiliMedia(m)) return;
         const target = options.playbackRate;
@@ -2855,11 +2856,11 @@
       if (enforceTimer) { clearInterval(enforceTimer); enforceTimer = null; }
       mediaObserver.disconnect();
     };
-    if (options.playbackRate !== 1) startEnforce();
+    if (options.enablePlaybackRateControl && options.playbackRate !== 1) startEnforce();
 
     document.addEventListener('ratechange', (e) => {
       const m = e.target;
-      if (!isBiliMedia(m)) return;
+      if (!options.enablePlaybackRateControl || !isBiliMedia(m)) return;
       const target = clipsTargetRate.get(m) || options.playbackRate;
       if (!target || target === 1) return;
       const cur = ogDesc.get.call(m);
@@ -2874,7 +2875,7 @@
 :fullscreen #bfq-speed-control,:-webkit-full-screen #bfq-speed-control{display:none!important}
 #bfq-speed-btn .bfq-speed-label{font-weight:600;letter-spacing:.5px}
 #bfq-speed-btn .bfq-speed-chev{font-size:10px;opacity:.7;margin-left:2px}
-.bfq-speed-pop{position:absolute;bottom:calc(100% + 8px);right:0;z-index:1001;min-width:160px;padding:8px 0;background:#fff;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.25);font-family:sans-serif;display:none}
+.bfq-speed-pop{position:absolute;bottom:calc(100% + 8px);right:0;z-index:1001;min-width:210px;padding:8px 0;background:#fff;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.25);font-family:sans-serif;display:none}
 .bfq-speed-pop.show{display:block}
 .bfq-speed-pop .bfq-row{padding:8px 14px;font-size:14px;color:#333;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
 .bfq-speed-pop .bfq-row:hover{background:#f4f5f7}
@@ -2894,6 +2895,13 @@
 .bfq-speed-pop .bfq-toggle .bfq-mini-switch.on{background:#00aeec}
 .bfq-speed-pop .bfq-toggle .bfq-mini-switch::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;background:#fff;border-radius:50%;transition:left .2s}
 .bfq-speed-pop .bfq-toggle .bfq-mini-switch.on::after{left:16px}
+.bfq-seek-layer{position:absolute;inset:0;z-index:20;pointer-events:none;display:flex;align-items:center;justify-content:space-between;padding:0 18%;opacity:0;visibility:hidden;transition:opacity .18s,visibility .18s}
+.bfq-seek-layer.show{opacity:1;visibility:visible}
+.bfq-seek-btn{pointer-events:auto;width:58px;height:58px;border:0;border-radius:50%;background:rgba(0,0,0,.58);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;cursor:pointer;box-shadow:0 3px 16px rgba(0,0,0,.3);font-family:sans-serif;transition:transform .15s,background .15s}
+.bfq-seek-btn:hover{background:rgba(0,0,0,.75);transform:scale(1.06)}
+.bfq-seek-btn .bfq-seek-icon{font-size:22px;line-height:20px}
+.bfq-seek-btn .bfq-seek-time{font-size:11px;font-weight:700;line-height:14px}
+:fullscreen .bfq-seek-layer,:-webkit-full-screen .bfq-seek-layer,.bpx-state-fullscreen .bfq-seek-layer,.bpx-state-webscreen .bfq-seek-layer{display:none!important}
     `);
 
     const SPEED_PRESETS = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3];
@@ -2910,7 +2918,9 @@
       const controls = player.querySelector('.bpx-player-control-bottom-right') ||
         player.querySelector('.bilibili-player-video-control-bottom-right');
       const video = player.querySelector('video');
-      return { player, controls, video };
+      const videoWrap = player.querySelector('.bpx-player-video-wrap') ||
+        player.querySelector('.bilibili-player-video-wrap') || player;
+      return { player, controls, video, videoWrap };
     };
 
     const isPlayerUiReady = (ui) => {
@@ -2924,11 +2934,15 @@
     let controlEl = null;
     let btnEl = null;
     let popEl = null;
+    let seekLayerEl = null;
+    let seekHideTimer = null;
+    const boundSeekHosts = new WeakSet();
 
     const syncFullscreenUi = () => {
       const isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
       if (controlEl) controlEl.style.display = isFullscreen ? 'none' : '';
       if (isFullscreen && popEl) popEl.classList.remove('show');
+      if (isFullscreen && seekLayerEl) seekLayerEl.classList.remove('show');
     };
 
     document.addEventListener('fullscreenchange', syncFullscreenUi);
@@ -2953,7 +2967,16 @@
           <div class="bfq-custom-label">输入自定义倍速 (0.07-16)</div>
           <div class="bfq-custom-row">
             <input type="number" min="0.07" max="16" step="0.05" value="${options.customPlaybackRate}" />
-            <button>应用</button>
+            <button data-action="apply-rate">应用</button>
+          </div>
+        </div>
+        <div class="bfq-divider"></div>
+        <div class="bfq-custom bfq-seek-config">
+          <div class="bfq-custom-label">左右跳转秒数 (1-300)</div>
+          <div class="bfq-custom-row">
+            <input data-seek="backward" type="number" min="1" max="300" step="1" value="${options.seekBackwardSeconds}" title="后退秒数" />
+            <input data-seek="forward" type="number" min="1" max="300" step="1" value="${options.seekForwardSeconds}" title="前进秒数" />
+            <button data-action="apply-seek">应用</button>
           </div>
         </div>
         <div class="bfq-divider"></div>
@@ -2985,12 +3008,24 @@
       }
       const applyBtn = e.target.closest?.('button');
       if (applyBtn) {
-        const input = popEl.querySelector('input');
-        const v = Number(input.value);
-        if (Number.isFinite(v) && v > 0) {
-          options.customPlaybackRate = v;
-          GM_setValue('customPlaybackRate', v);
-          setRate(v);
+        if (applyBtn.dataset.action === 'apply-rate') {
+          const input = applyBtn.closest('.bfq-custom')?.querySelector('input');
+          const v = Number(input?.value);
+          if (Number.isFinite(v) && v > 0) {
+            options.customPlaybackRate = v;
+            GM_setValue('customPlaybackRate', v);
+            setRate(v);
+          }
+        } else if (applyBtn.dataset.action === 'apply-seek') {
+          const root = applyBtn.closest('.bfq-seek-config');
+          const backward = Math.max(1, Math.min(300, Math.round(Number(root?.querySelector('[data-seek="backward"]')?.value) || 10)));
+          const forward = Math.max(1, Math.min(300, Math.round(Number(root?.querySelector('[data-seek="forward"]')?.value) || 15)));
+          options.seekBackwardSeconds = backward;
+          options.seekForwardSeconds = forward;
+          GM_setValue('seekBackwardSeconds', backward);
+          GM_setValue('seekForwardSeconds', forward);
+          refreshPop();
+          refreshSeekLabels();
         }
         return;
       }
@@ -3018,9 +3053,80 @@
       return btn;
     };
 
+    const refreshSeekLabels = () => {
+      if (!seekLayerEl) return;
+      const backward = seekLayerEl.querySelector('[data-seek-action="backward"] .bfq-seek-time');
+      const forward = seekLayerEl.querySelector('[data-seek-action="forward"] .bfq-seek-time');
+      if (backward) backward.textContent = `${options.seekBackwardSeconds}s`;
+      if (forward) forward.textContent = `${options.seekForwardSeconds}s`;
+      const backwardButton = seekLayerEl.querySelector('[data-seek-action="backward"]');
+      const forwardButton = seekLayerEl.querySelector('[data-seek-action="forward"]');
+      if (backwardButton) backwardButton.title = `后退 ${options.seekBackwardSeconds} 秒`;
+      if (forwardButton) forwardButton.title = `前进 ${options.seekForwardSeconds} 秒`;
+    };
+
+    const hideSeekControls = () => {
+      if (seekHideTimer) clearTimeout(seekHideTimer);
+      seekHideTimer = null;
+      seekLayerEl?.classList.remove('show');
+    };
+
+    const showSeekControls = () => {
+      const ui = getPlayerUi();
+      const isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
+      const classText = `${ui?.player?.className || ''} ${document.body?.className || ''}`;
+      if (isFullscreen || /bpx-state-(?:full|web)screen/.test(classText)) return;
+      seekLayerEl?.classList.add('show');
+      if (seekHideTimer) clearTimeout(seekHideTimer);
+      seekHideTimer = setTimeout(hideSeekControls, 2000);
+    };
+
+    const seekVideo = (direction) => {
+      const video = getPlayerUi()?.video;
+      if (!video || !Number.isFinite(video.currentTime)) return;
+      const delta = direction === 'backward' ? -options.seekBackwardSeconds : options.seekForwardSeconds;
+      const maxTime = Number.isFinite(video.duration) ? video.duration : video.currentTime + Math.max(delta, 0);
+      video.currentTime = Math.max(0, Math.min(maxTime, video.currentTime + delta));
+      showSeekControls();
+    };
+
+    const mountSeekControls = (ui) => {
+      if (!ui?.videoWrap) return;
+      if (!seekLayerEl?.isConnected || seekLayerEl.parentElement !== ui.videoWrap) {
+        seekLayerEl?.remove();
+        seekLayerEl = document.createElement('div');
+        seekLayerEl.className = 'bfq-seek-layer';
+        seekLayerEl.innerHTML = `
+          <button class="bfq-seek-btn" data-seek-action="backward" title="后退 ${options.seekBackwardSeconds} 秒">
+            <span class="bfq-seek-icon">↶</span><span class="bfq-seek-time">${options.seekBackwardSeconds}s</span>
+          </button>
+          <button class="bfq-seek-btn" data-seek-action="forward" title="前进 ${options.seekForwardSeconds} 秒">
+            <span class="bfq-seek-icon">↷</span><span class="bfq-seek-time">${options.seekForwardSeconds}s</span>
+          </button>`;
+        ui.videoWrap.style.position = ui.videoWrap.style.position || 'relative';
+        ui.videoWrap.appendChild(seekLayerEl);
+        seekLayerEl.querySelectorAll('[data-seek-action]').forEach((button) => {
+          button.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            seekVideo(button.dataset.seekAction);
+          });
+        });
+      }
+      if (!boundSeekHosts.has(ui.videoWrap)) {
+        boundSeekHosts.add(ui.videoWrap);
+        ui.videoWrap.addEventListener('click', (event) => {
+          if (event.target.closest?.('.bfq-seek-btn')) return;
+          showSeekControls();
+        }, true);
+      }
+      refreshSeekLabels();
+    };
+
     const mount = () => {
       const ui = getPlayerUi();
       if (!isPlayerUiReady(ui)) return;
+      mountSeekControls(ui);
       if (controlEl?.isConnected && controlEl.parentElement === ui.controls) return;
 
       controlEl?.remove();
@@ -3058,11 +3164,13 @@
 
     const mountObserver = new MutationObserver((mutations) => {
       const currentControls = getPlayerUi()?.controls;
+      const currentVideoWrap = getPlayerUi()?.videoWrap;
       const controlChanged = !controlEl?.isConnected || controlEl.parentElement !== currentControls;
+      const seekLayerChanged = !seekLayerEl?.isConnected || seekLayerEl.parentElement !== currentVideoWrap;
       const videoAdded = mutations.some((mutation) => [...mutation.addedNodes].some((node) =>
         node.nodeType === 1 && (node.matches?.('video') || node.querySelector?.('video'))
       ));
-      if (controlChanged || videoAdded) scheduleMount();
+      if (controlChanged || seekLayerChanged || videoAdded) scheduleMount();
     });
     const startMountWatch = () => {
       scheduleMount();
