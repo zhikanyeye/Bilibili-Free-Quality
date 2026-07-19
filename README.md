@@ -1,7 +1,9 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Version](https://img.shields.io/static/v1?label=version&message=4.0.0-alpha.16&color=orange)
+**当前版本：4.0.0-alpha.18**
+
+![Version](https://img.shields.io/static/v1?label=version&message=4.0.0-alpha.18&color=orange)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 
 ## 📌 简介
@@ -33,6 +35,7 @@
 - ✅ **分页 / 无限滚动**两种评论加载模式可切换，分页模式支持输入页码跳转
 - ✅ **直播分区连续加载**：未登录下拉分区列表时自动兜底旧接口，避免一直卡在加载中
 - ✅ **尊重自动播放设置**：防暂停逻辑只在已开始播放后恢复，不再强制初始自动播放
+- ✅ **全登录态倍速播放**：登录与未登录均在播放器原生控制栏显示倍速按钮，支持预设和自定义倍速；全屏时自动隐藏
 - ✅ **可视化面板**，一键切换 1080P / 720P / 480P / 360P，并可切换解锁模式
 - ✅ **Edge / Chrome / Firefox** 全平台兼容
 - ✅ **零配置**，安装即用；已登录用户自动退出，零干扰
@@ -106,6 +109,16 @@
 4. 直播分区接口异常时，将 `/xlive/web-interface/v1/second/getList` 兜底到 `/room/v3/area/getRoomList` 并转换数据结构
 
 ## 🔄 更新日志
+
+### v4.0.0-alpha.18 (2026-07-19)
+- **原生控制栏**：倍速按钮接入播放器右侧控制栏，跟随宿主布局和控制栏显隐
+- **稳定挂载**：等待页面可见、视频元数据和控制栏尺寸就绪后再挂载，减少后台标签页错位
+- **SPA 恢复**：播放器或 video 节点被替换后自动重挂载并恢复已保存倍速
+- **生命周期参考**：参考 `hanydd/BilibiliSponsorBlock` 的播放器就绪与重挂载设计，保持当前 Userscript 轻量结构
+
+### v4.0.0-alpha.17 (2026-07-19)
+- ▶️ **倍速播放**：将倍速控制器移到登录态退出逻辑之前，登录与未登录均可使用悬浮倍速按钮
+- 📌 **版本展示**：README 增加纯文本当前版本，CDN 徽章异常时仍可直接看到版本号
 
 ### v4.0.0-alpha.16 (2026-07-19)
 - 🎬 **倍速按钮**：进入播放器全屏时自动隐藏悬浮按钮并关闭倍速弹层，退出全屏后自动恢复
@@ -311,6 +324,7 @@
 - [Bilibili - 防止视频被自动暂停及弹出登录窗口](https://greasyfork.org/zh-CN/scripts/467474)
 - [Bilibili - 在未登录的情况下自动并无限试用最高画质](https://greasyfork.org/zh-CN/scripts/467511)
 - [Bilibili - 在未登录的情况下照常加载评论](https://greasyfork.org/zh-CN/scripts/473498)
+- [小电视空降助手 BilibiliSponsorBlock](https://github.com/hanydd/BilibiliSponsorBlock)（播放器生命周期与原生控制栏挂载设计）
 
 ## 📬 反馈与支持
 
