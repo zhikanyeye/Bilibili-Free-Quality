@@ -1,7 +1,7 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Version](https://img.shields.io/badge/version-4.0.0--alpha.9-orange)
+![Version](https://img.shields.io/badge/version-4.0.0--alpha.10-orange)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
 
 ## 📌 简介
@@ -106,6 +106,12 @@
 4. 直播分区接口异常时，将 `/xlive/web-interface/v1/second/getList` 兜底到 `/room/v3/area/getRoomList` 并转换数据结构
 
 ## 🔄 更新日志
+
+### v4.0.0-alpha.10 (2026-07-19)
+- 🔄 **评论**：取消协议级 reply 劫持，统一回到纯重绘评论（WBI 自调 API + 隐藏官方组件 + 全站守护）
+- 🐛 **修复**：首屏立刻加载第一页评论（此前无限滚动模式需滚到底才请求，看起来像“没评论”）
+- 🐛 **修复**：画质未达目标档（480/360）时强制重试；normalize quality；协议级也装试用按钮 + 掉落监听 + requestQuality
+- 📚 **README**：版本 badge → alpha.10
 
 ### v4.0.0-alpha.9 (2026-07-19)
 - 🐛 **修复**：视频页评论区不可见——恢复安全自绘评论（协议级 + 自绘并存），挂载仍用 isSafeCommentRoot 保护顶栏

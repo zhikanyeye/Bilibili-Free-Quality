@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      4.0.0-alpha.9
-// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P；客户端兼容模式自动试用画质 + 拦截画质劫持，fallback 兜底拔高 · 拦 rcmd 清 buvid3 防登录弹窗（DD1969 思路）· 彻底屏蔽自动暂停 · WBI 签名自调评论 API，视频/动态/专栏评论完整解锁 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P
+// @version      4.0.0-alpha.10
+// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P，未达目标档自动重试并 requestQuality 强制切档；客户端兼容模式自动试用画质 + 拦截画质劫持 · 拦 rcmd 清 buvid3 防登录弹窗 · 彻底屏蔽自动暂停 · 评论统一自绘重绘（WBI 自调 reply API，隐藏官方组件）· 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -167,7 +167,7 @@
       || rawUrl.includes('/pgc/player/web/v2/playurl');
   }
 
-  // 协议级模式下也主动 requestQuality，避免 SPA 切推荐后卡在 360P
+  // 强制切到目标画质（协议级也走，避免卡在 480/360）
   function forcePlayerTargetQuality(reason = 'protocol') {
     try {
       const map = { 1080: 80, 720: 64, 480: 32, 360: 16 };
@@ -175,29 +175,33 @@
       const player = unsafeWindow.player;
       if (!player?.requestQuality) return false;
       const supported = player.getSupportedQualityList?.();
-      if (Array.isArray(supported) && supported.length && !supported.includes(target)) {
-        const best = Math.max(...supported.filter(q => q <= target), ...supported);
-        Promise.resolve(player.requestQuality(best)).catch(() => {});
-        return true;
+      let qn = target;
+      if (Array.isArray(supported) && supported.length) {
+        if (supported.includes(target)) qn = target;
+        else {
+          // 优先不高于目标的最高档，再退到列表最高
+          const lower = supported.filter(q => q <= target);
+          qn = lower.length ? Math.max(...lower) : Math.max(...supported);
+        }
       }
-      Promise.resolve(player.requestQuality(target)).catch(() => {});
+      Promise.resolve(player.requestQuality(qn)).catch(() => {});
       return true;
     } catch (e) {
       return false;
     }
   }
 
-  function scheduleForceQuality(times = 6, gap = 800) {
+  function scheduleForceQuality(times = 10, gap = 600) {
     let n = 0;
     const tick = () => {
-      forcePlayerTargetQuality('spa-retry-' + n);
+      forcePlayerTargetQuality('retry-' + n);
       n += 1;
       if (n < times) setTimeout(tick, gap);
     };
-    setTimeout(tick, 300);
+    setTimeout(tick, 200);
   }
 
-  // SPA 切视频时清空旧高清缓存，强制重新走 playurl 拦截并拔高画质
+  // SPA 切视频：清缓存 + 强制重拦 playurl + 多次拔高
   function installSpaPlayinfoReset() {
     const reset = () => {
       _playinfoCache = null;
@@ -227,6 +231,60 @@
       wrapHistory('replaceState');
       window.addEventListener('popstate', reset);
     } catch (e) {}
+  }
+
+  // 协议级开启时也装：试用按钮点击 + 画质掉落监听
+  function installAlwaysQualityGuard() {
+    if (isBilibiliLoggedIn()) return;
+    if (!PAGE_RE.video.test(location.href) && !PAGE_RE.festival.test(location.href) && !PAGE_RE.list.test(location.href)) return;
+
+    let dropStarted = false;
+    const startDropWatcher = () => {
+      if (dropStarted) return;
+      dropStarted = true;
+      setInterval(() => {
+        try {
+          const map = { 1080: 80, 720: 64, 480: 32, 360: 16 };
+          const target = map[options.preferQuality] || 80;
+          const cur = unsafeWindow.player?.getCurrentQuality?.();
+          const supported = unsafeWindow.player?.getSupportedQualityList?.();
+          if (cur != null && cur < target) {
+            if (!supported?.length || supported.includes(target) || Math.max(...(supported || [0])) > cur) {
+              forcePlayerTargetQuality('drop-watch');
+            }
+          }
+        } catch (e) {}
+      }, CONFIG.RE_UNLOCK_INTERVAL);
+    };
+
+    const observeTrialButton = () => {
+      const observer = new MutationObserver(() => {
+        const btn = document.querySelector('.bpx-player-toast-confirm-login');
+        if (!btn || btn.dataset.bfqClicked) return;
+        btn.dataset.bfqClicked = '1';
+        setTimeout(() => {
+          try { btn.click(); } catch (e) {}
+          scheduleForceQuality(8, 700);
+          startDropWatcher();
+          setTimeout(() => delete btn.dataset.bfqClicked, 2000);
+        }, CONFIG.BUTTON_CLICK_DELAY);
+      });
+      const root = document.body || document.documentElement;
+      if (root) observer.observe(root, { childList: true, subtree: true });
+    };
+
+    if (document.body) observeTrialButton();
+    else document.addEventListener('DOMContentLoaded', observeTrialButton, { once: true });
+
+    // 播放器就绪后立即拔高 + 掉落监听
+    const waitPlayer = setInterval(() => {
+      if (unsafeWindow.player?.requestQuality) {
+        clearInterval(waitPlayer);
+        scheduleForceQuality(8, 800);
+        startDropWatcher();
+      }
+    }, 400);
+    setTimeout(() => clearInterval(waitPlayer), 30000);
   }
 
   // 获取视频AID
@@ -304,57 +362,6 @@
 
   function isCommentDetailPage() {
     return isVideoCommentPage() || PAGE_RE.dynamic.test(location.href) || PAGE_RE.opus.test(location.href) || PAGE_RE.article.test(location.href);
-  }
-
-  // 需要自绘评论的页面：动态/专栏等官方组件在未登录下常挂；视频页走协议级，不自绘
-  function needsCustomCommentRender() {
-    return PAGE_RE.dynamic.test(location.href) || PAGE_RE.opus.test(location.href) || PAGE_RE.article.test(location.href);
-  }
-
-  // 协议级评论解锁：拦截 reply 请求并 credentials:omit（对齐 beefreely），不替换 DOM
-  let replyUnlockInstalled = false;
-  function installReplyProtocolUnlock() {
-    if (!options.enableCommentUnlock || replyUnlockInstalled || isBilibiliLoggedIn()) return;
-    replyUnlockInstalled = true;
-
-    const isReplyUrl = (u) => u && (
-      u.includes('/x/v2/reply/wbi/main') ||
-      u.includes('/x/v2/reply/reply') ||
-      u.includes('/x/v2/reply/wbi/reply')
-    );
-
-    const originFetch = unsafeWindow.fetch?.bind(unsafeWindow);
-    if (originFetch) {
-      unsafeWindow.fetch = function(input, init) {
-        const rawUrl = typeof input === 'string' ? input : (input?.url ?? '');
-        if (!isReplyUrl(rawUrl)) return originFetch(input, init);
-        const nextInit = { ...(init || {}), credentials: 'omit' };
-        if (input instanceof Request) {
-          try {
-            return originFetch(new Request(rawUrl, { ...input, credentials: 'omit' }), nextInit);
-          } catch (e) {
-            return originFetch(rawUrl, nextInit);
-          }
-        }
-        return originFetch(rawUrl, nextInit);
-      };
-    }
-
-    const XHR = unsafeWindow.XMLHttpRequest;
-    if (!XHR || XHR.prototype.__bfqReplyPatched) return;
-    XHR.prototype.__bfqReplyPatched = true;
-    const originOpen = XHR.prototype.open;
-    const originSend = XHR.prototype.send;
-    XHR.prototype.open = function(method, url, ...rest) {
-      this.__bfqReplyUrl = typeof url === 'string' ? url : (url?.url ?? '');
-      return originOpen.call(this, method, url, ...rest);
-    };
-    XHR.prototype.send = function(...args) {
-      if (isReplyUrl(this.__bfqReplyUrl)) {
-        try { this.withCredentials = false; } catch (e) {}
-      }
-      return originSend.apply(this, args);
-    };
   }
 
   function getDynamicIdFromLocation() {
@@ -704,19 +711,44 @@
       const data = json.data || {};
       if (data.isPreview === 1 || data.preview === 1) return true;
       if (data.need_login === 1 || data.need_login === true) return true;
+      // 必须达到用户目标档（默认 1080=80），480/360 一律视为失败并重试
       const target = getTargetQn();
-      const minAccept = Math.min(target, 64);
       if (data.dash && Array.isArray(data.dash.video) && data.dash.video.length > 0) {
-        return Math.max(...data.dash.video.map(v => v.id || 0)) < minAccept;
+        return Math.max(...data.dash.video.map(v => v.id || 0)) < target;
       }
       if (Array.isArray(data.durl) && data.durl.length > 0) {
-        return (data.quality || 0) < minAccept;
+        return (data.quality || 0) < target;
       }
       if (Array.isArray(data.accept_quality) && data.accept_quality.length > 0) {
-        return Math.max(...data.accept_quality) < minAccept;
+        return Math.max(...data.accept_quality) < target;
       }
       return false;
     } catch (e) { return true; }
+  }
+
+  // 把响应里的 quality / accept 对齐到 dash 实际最高档，方便播放器切 1080
+  function normalizePlayurlQuality(json) {
+    try {
+      if (!json || json.code !== 0 || !json.data) return json;
+      const data = json.data;
+      let maxQn = 0;
+      if (data.dash?.video?.length) {
+        maxQn = Math.max(...data.dash.video.map(v => v.id || 0));
+      } else if (Array.isArray(data.durl) && data.quality) {
+        maxQn = data.quality;
+      }
+      if (maxQn > 0) {
+        data.quality = maxQn;
+        if (Array.isArray(data.accept_quality)) {
+          if (!data.accept_quality.includes(maxQn)) data.accept_quality = [...data.accept_quality, maxQn].sort((a, b) => b - a);
+        } else {
+          data.accept_quality = [maxQn, 64, 32, 16];
+        }
+      }
+      return json;
+    } catch (e) {
+      return json;
+    }
   }
 
   async function parseFetchResponseJson(res) {
@@ -768,8 +800,10 @@
           ensureFakeLoginCookie();
 
           let { json: json1 } = await fetchPlayurlJson(rawUrl, true);
+          json1 = normalizePlayurlQuality(json1);
           if (json1 && !isTrialOnlyPlayurl(json1)) {
             writePlayinfo(json1, reqKey);
+            scheduleForceQuality(6, 500);
             return new Response(JSON.stringify(json1), {
               status: 200,
               statusText: 'OK',
@@ -777,11 +811,24 @@
             });
           }
 
-          console.warn('[Bilibili脚本] try_look=1 仍给试看，重试仅 qn=' + getTargetQn());
+          console.warn('[Bilibili脚本] try_look 未达目标画质，重试 qn=' + getTargetQn());
           let { res: res2, json: json2 } = await fetchPlayurlJson(rawUrl, false);
-          if (json2) writePlayinfo(json2, reqKey);
-          if (!json2) return res2;
-          return new Response(JSON.stringify(json2), {
+          json2 = normalizePlayurlQuality(json2);
+          // 两路都有结果时取更高档
+          const pick = (() => {
+            if (!json1) return json2;
+            if (!json2) return json1;
+            const maxOf = (j) => {
+              const d = j?.data;
+              if (d?.dash?.video?.length) return Math.max(...d.dash.video.map(v => v.id || 0));
+              return d?.quality || 0;
+            };
+            return maxOf(json2) >= maxOf(json1) ? json2 : json1;
+          })();
+          if (pick) writePlayinfo(pick, reqKey);
+          scheduleForceQuality(8, 600);
+          if (!pick) return res2;
+          return new Response(JSON.stringify(pick), {
             status: 200,
             statusText: 'OK',
             headers: { 'content-type': 'application/json; charset=utf-8' }
@@ -829,11 +876,21 @@
           ensureFakeLoginCookie();
 
           let { json } = await fetchPlayurlJson(rawUrl, true);
+          json = normalizePlayurlQuality(json);
           if (isTrialOnlyPlayurl(json)) {
-            console.warn('[Bilibili脚本] XHR try_look=1 仍给试看，重试');
-            ({ json } = await fetchPlayurlJson(rawUrl, false));
+            console.warn('[Bilibili脚本] XHR try_look 未达目标画质，重试');
+            let json2;
+            ({ json: json2 } = await fetchPlayurlJson(rawUrl, false));
+            json2 = normalizePlayurlQuality(json2);
+            const maxOf = (j) => {
+              const d = j?.data;
+              if (d?.dash?.video?.length) return Math.max(...d.dash.video.map(v => v.id || 0));
+              return d?.quality || 0;
+            };
+            if (json2 && maxOf(json2) >= maxOf(json || {})) json = json2;
           }
           writePlayinfo(json, reqKey);
+          scheduleForceQuality(8, 600);
           emitXhrFakeResponse(xhr, json || {});
         } catch (e) {
           console.warn('[Bilibili脚本] XHR playurl 解锁失败:', e);
@@ -1220,10 +1277,7 @@
     if (!options.enableCommentUnlock) return;
     if (!isCommentDetailPage()) return;
 
-    // 协议级 + 自绘并存：协议级保证官方组件也能拉全量；自绘保证未登录可见评论区
-    // 挂载用 isSafeCommentRoot，避免 hide 误伤顶栏
-    installReplyProtocolUnlock();
-
+    // 统一纯重绘评论：自调 WBI reply API，隐藏官方组件；不走协议级 reply 劫持
     commentCurrentSortType = COMMENT_SORT.HOT;
     commentIsLoading = false;
     commentIsEnd = false;
@@ -1233,7 +1287,7 @@
     commentTotalCount = 0;
 
     GM_addStyle(`
-#bili-custom-comments{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB",sans-serif;font-size:14px;color:#222;padding:16px 0}
+#bili-custom-comments{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB",sans-serif;font-size:14px;color:#222;padding:16px 0;min-height:120px}
 .bili-comment-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid #e3e5e7}
 .bili-comment-title{font-size:18px;font-weight:700;color:#18191c}
 .bili-comment-sort{display:flex;gap:16px}
@@ -1281,29 +1335,16 @@
 #bili-jump-page-input:focus{border-color:#00aeec}
 `);
 
-    // 收窄选择器：去掉 #comment / 裸 .comment-container，避免误伤顶栏等布局节点
-    const nativeCommentSelector = 'bili-comments, #commentapp bili-comments, #commentapp, .bili-comment-container';
-    const isSafeCommentRoot = (el) => {
-      if (!el || el.nodeType !== 1) return false;
-      if (el.closest?.('.bili-header, #bili-header-container, #biliMainHeader, .fixed-header')) return false;
-      const tag = (el.tagName || '').toUpperCase();
-      if (tag === 'BILI-COMMENTS' || tag === 'BILI-COMMENT-CONTAINER') return true;
-      if (el.id === 'commentapp') return true;
-      if (el.classList?.contains('bili-comment-container')) return true;
-      return false;
-    };
+    // 原版选择器：覆盖视频/动态/专栏各类评论容器
+    const nativeCommentSelector = 'bili-comments, .comment-container, #commentapp, #comment, .bili-comment-container';
     let commentSection;
     let hasNativeCommentSection = true;
     try {
-      commentSection = await waitForElement(nativeCommentSelector, 12000);
-      if (!isSafeCommentRoot(commentSection)) {
-        hasNativeCommentSection = false;
-        commentSection = document.querySelector('.article-container, .opus-detail, .opus-detail-content, main, #app') || document.body;
-      }
-    } catch(e) {
+      commentSection = await waitForElement(nativeCommentSelector, 15000);
+    } catch (e) {
       console.warn('[评论模块] 未找到官方评论容器，改用页面底部挂载:', e.message);
       hasNativeCommentSection = false;
-      commentSection = document.querySelector('.article-container, .opus-detail, .opus-detail-content, main, #app') || document.body;
+      commentSection = document.querySelector('main, #app, .article-container, .opus-detail, .opus-detail-content, .left-container, .video-container-v1') || document.body;
       if (!commentSection) return;
     }
 
@@ -1337,20 +1378,20 @@
         : `<div id="bili-scroll-anchor"></div>`}`;
 
     const hideOfficialComment = (el) => {
-      if (!isSafeCommentRoot(el)) return false;
+      if (!el || el.nodeType !== 1) return;
+      // 只 hide 明确的评论节点，不碰顶栏
+      if (el.closest?.('.bili-header, #bili-header-container, #biliMainHeader, .fixed-header')) return;
       el.style.setProperty('display', 'none', 'important');
-      return true;
     };
 
     const mountCustomComments = () => {
-      if (document.getElementById('bili-custom-comments') === customEl && customEl.isConnected) return;
       const nativeSection = document.querySelector(nativeCommentSelector);
-      if (nativeSection?.parentNode && isSafeCommentRoot(nativeSection)) {
+      if (nativeSection?.parentNode) {
         if (!customEl.isConnected) nativeSection.parentNode.insertBefore(customEl, nativeSection.nextSibling);
         hideOfficialComment(nativeSection);
         return;
       }
-      if (hasNativeCommentSection && commentSection?.parentNode && isSafeCommentRoot(commentSection)) {
+      if (hasNativeCommentSection && commentSection?.parentNode) {
         if (!customEl.isConnected) commentSection.parentNode.insertBefore(customEl, commentSection.nextSibling);
         hideOfficialComment(commentSection);
         return;
@@ -1362,14 +1403,25 @@
 
     mountCustomComments();
 
-    // 守护范围缩到评论父节点，避免全站 MutationObserver 误伤顶栏
-    const guardRoot = customEl.parentNode || commentSection || document.body;
-    const commentGuard = new MutationObserver(() => {
-      if (!document.getElementById('bili-custom-comments')) mountCustomComments();
-      guardRoot.querySelectorAll?.('bili-comments, bili-comment-container')?.forEach((node) => {
-        if (isSafeCommentRoot(node)) hideOfficialComment(node);
-      });
+    // 全站守护：自定义容器被拆掉就重挂，新出现的官方评论立刻隐藏
+    const commentGuard = new MutationObserver((mutations) => {
+      if (!document.getElementById('bili-custom-comments')) {
+        mountCustomComments();
+      }
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (node.nodeType !== 1) continue;
+          if (node.tagName === 'BILI-COMMENTS' || node.tagName === 'BILI-COMMENT-CONTAINER' ||
+              node.id === 'commentapp' || node.id === 'comment' ||
+              node.classList?.contains('comment-container') || node.classList?.contains('bili-comment-container')) {
+            hideOfficialComment(node);
+          }
+          node.querySelectorAll?.('bili-comments, bili-comment-container, #commentapp, #comment, .comment-container, .bili-comment-container')
+            ?.forEach(hideOfficialComment);
+        }
+      }
     });
+    const guardRoot = document.body || document.documentElement;
     if (guardRoot) commentGuard.observe(guardRoot, { childList: true, subtree: true });
 
     customEl.querySelectorAll('.sort-btn').forEach(btn => {
@@ -1384,39 +1436,44 @@
         commentCurrentPage = 0;
         commentTotalCount = 0;
         commentIsEnd = false;
-        document.getElementById('bili-comment-end').style.display = 'none';
+        const endEl = document.getElementById('bili-comment-end');
+        if (endEl) endEl.style.display = 'none';
         await loadCommentPage('', false);
       });
     });
 
+    // 首屏立即拉评论（分页与无限滚动模式都先加载第一页）
+    await loadCommentPage('', false);
+
     if (options.enableReplyPagination) {
-      document.getElementById('bili-next-page').addEventListener('click', async () => {
+      document.getElementById('bili-next-page')?.addEventListener('click', async () => {
         if (commentIsEnd || commentIsLoading) return;
         commentCurrentPage++;
         await loadCommentPage(commentPageOffsets[commentCurrentPage] || '', false);
       });
-      document.getElementById('bili-prev-page').addEventListener('click', async () => {
+      document.getElementById('bili-prev-page')?.addEventListener('click', async () => {
         if (commentCurrentPage <= 0 || commentIsLoading) return;
         commentCurrentPage--;
         commentIsEnd = false;
         await loadCommentPage(commentPageOffsets[commentCurrentPage] || '', false);
       });
       const jumpInput = document.getElementById('bili-jump-page-input');
-      document.getElementById('bili-jump-page').addEventListener('click', async () => {
+      document.getElementById('bili-jump-page')?.addEventListener('click', async () => {
         await jumpToCommentPage(Number(jumpInput.value));
       });
-      jumpInput.addEventListener('keydown', async (event) => {
+      jumpInput?.addEventListener('keydown', async (event) => {
         if (event.key === 'Enter') await jumpToCommentPage(Number(jumpInput.value));
       });
-      await loadCommentPage('', false);
     } else {
       const anchor = document.getElementById('bili-scroll-anchor');
-      const scrollObserver = new IntersectionObserver(async () => {
-        if (!commentIsLoading && !commentIsEnd) {
-          await loadCommentPage(commentNextOffset, commentNextOffset !== '');
-        }
-      }, { rootMargin: '300px' });
-      scrollObserver.observe(anchor);
+      if (anchor) {
+        const scrollObserver = new IntersectionObserver(async () => {
+          if (!commentIsLoading && !commentIsEnd && commentNextOffset) {
+            await loadCommentPage(commentNextOffset, true);
+          }
+        }, { rootMargin: '300px' });
+        scrollObserver.observe(anchor);
+      }
     }
 
     /* ========== 监听视频切换，自动更新评论区 ========== */
@@ -1432,16 +1489,15 @@
           if (bvMatch) newOid = b2a(bvMatch[0]);
         }
       } catch (e) {}
-      
+
       if (newOid && newOid !== lastOid) {
         lastOid = newOid;
         commentOid = newOid;
         const state = unsafeWindow.__INITIAL_STATE__;
         commentCreatorID = state?.upData?.mid || state?.videoData?.owner?.mid || 0;
-        
+
         console.log(`[评论模块] 检测到视频切换，新 oid=${newOid}, creator=${commentCreatorID}`);
-        
-        // 重置评论区状态
+
         commentCurrentSortType = COMMENT_SORT.HOT;
         document.querySelectorAll('#bili-custom-comments .sort-btn').forEach(b => b.classList.remove('active'));
         document.querySelector('#bili-custom-comments .sort-btn[data-sort="2"]')?.classList.add('active');
@@ -1450,28 +1506,27 @@
         commentCurrentPage = 0;
         commentTotalCount = 0;
         commentIsEnd = false;
-        
-        // 清空评论列表
+
         const list = document.getElementById('bili-comment-list');
         if (list) list.innerHTML = '';
         const endEl = document.getElementById('bili-comment-end');
         if (endEl) endEl.style.display = 'none';
-        
-        // 重新加载评论
+
+        mountCustomComments();
         loadCommentPage('', false);
       }
     }, 1500);
   }
 
-  /* ========== 1. 已登录退出 + 主模块安装 ========== */
+  /* ========== 1. 主模块安装 ========== */
 
   installRcmdLoginGuard();
-  installReplyProtocolUnlock();
   installLiveAreaUnlock();
   installPlayurlUnlock();
+  installAlwaysQualityGuard();
   setupDynamicCommentBtnModifier();
 
-  /* ========== 初始化评论模块（无论是否登录都执行） ========== */
+  /* ========== 初始化评论模块 ========== */
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initCommentModule);
   } else {
