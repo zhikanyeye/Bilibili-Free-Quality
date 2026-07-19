@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      4.0.0-alpha.13
+// @version      4.0.0-alpha.14
 // @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P，SPA 切视频检测 aid/cid 自动重签；客户端兼容模式自动试用画质 + 拦截画质劫持 · 拦 rcmd 清 buvid3 防登录弹窗 · 彻底屏蔽自动暂停 · 评论按 DD1969 方式只替换评论容器（不全站 hide，保护顶栏）· 播放器底部悬浮倍速按钮（借鉴 globalSpeed GhostMode 强制 playbackRate 生效）· 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 无远程样式依赖
 // @license      GPL-3.0
 // @author       zhikanyeye
@@ -2003,9 +2003,79 @@
         };
       }
 
+      // 自动 play() 常触发浏览器自动播放静音策略；记录用户音量意图并恢复
+      let userWantsMuted = false;
+      let lastGoodVolume = 0.8;
+      try {
+        const bootMedia = player.mediaElement?.();
+        if (bootMedia && typeof bootMedia.volume === 'number' && bootMedia.volume > 0) {
+          lastGoodVolume = bootMedia.volume;
+        }
+        if (bootMedia) userWantsMuted = !!bootMedia.muted && bootMedia.volume === 0;
+      } catch (e) {}
+
+      const rememberVolumeFrom = (media) => {
+        try {
+          if (!media) return;
+          if (!media.muted && media.volume > 0) {
+            lastGoodVolume = media.volume;
+            userWantsMuted = false;
+          }
+        } catch (e) {}
+      };
+
+      const restoreUnmute = (media, reason = 'auto') => {
+        if (!media || userWantsMuted) return false;
+        try {
+          if (media.muted || media.volume === 0) {
+            media.muted = false;
+            if (media.volume === 0) media.volume = lastGoodVolume || 0.8;
+            console.log('[Bilibili脚本] 恢复非静音播放:', reason, 'volume=', media.volume);
+            return true;
+          }
+        } catch (e) {}
+        return false;
+      };
+
+      const safePlay = (media, reason = 'resume') => {
+        if (!media) return Promise.resolve();
+        return Promise.resolve(media.play()).then(() => {
+          // 自动播放策略可能把视频静音；立即尝试恢复，用户手势后再保底一次
+          restoreUnmute(media, reason);
+        }).catch(() => {});
+      };
+
+      document.addEventListener('volumechange', (e) => {
+        const m = e.target;
+        if (!m || m.tagName !== 'VIDEO' && m.tagName !== 'AUDIO') return;
+        try {
+          if (m.muted || m.volume === 0) {
+            // 仅在近期有用户操作时视为用户主动静音
+            if (Date.now() - lastTrustedActionTime <= CONFIG.CLICK_TIMEOUT) {
+              userWantsMuted = true;
+            }
+          } else {
+            userWantsMuted = false;
+            lastGoodVolume = m.volume > 0 ? m.volume : lastGoodVolume;
+          }
+        } catch (err) {}
+      }, true);
+
+      // 用户首次点击/按键后强制取消脚本触发的静音
+      const unmuteOnGesture = () => {
+        try {
+          const media = currentMedia || unsafeWindow.player?.mediaElement?.();
+          restoreUnmute(media, 'user-gesture');
+          document.querySelectorAll('video').forEach((v) => restoreUnmute(v, 'user-gesture-all'));
+        } catch (e) {}
+      };
+      document.addEventListener('pointerdown', unmuteOnGesture, { capture: true, passive: true });
+      document.addEventListener('keydown', unmuteOnGesture, { capture: true, passive: true });
+
       const bindMediaGuard = (media) => {
         if (!media || media.dataset.bfqPauseGuardBound) return;
         const originMediaPause = media.pause.bind(media);
+        rememberVolumeFrom(media);
 
         media.pause = function () {
           if (!hasPlaybackStarted) return originMediaPause();
@@ -2023,12 +2093,24 @@
           }
 
           isUserPaused = false;
-          Promise.resolve().then(() => media.play()).catch(() => {});
+          safePlay(media, 'anti-pause');
         }, true);
 
         media.addEventListener('play', () => {
           hasPlaybackStarted = true;
           isUserPaused = false;
+          restoreUnmute(media, 'play-event');
+        }, true);
+
+        media.addEventListener('playing', () => {
+          restoreUnmute(media, 'playing-event');
+        }, true);
+
+        media.addEventListener('loadedmetadata', () => {
+          rememberVolumeFrom(media);
+          // 刷新后媒体常以 muted 初始化，若用户未主动静音则恢复
+          setTimeout(() => restoreUnmute(media, 'loadedmetadata'), 50);
+          setTimeout(() => restoreUnmute(media, 'loadedmetadata-delay'), 500);
         }, true);
 
         media.dataset.bfqPauseGuardBound = '1';
@@ -2069,7 +2151,9 @@
         const media = currentMedia;
         if (!media || !hasPlaybackStarted || media.ended || document.hidden || allowInternalPause || isUserPaused) return;
         if (media.paused) {
-          media.play().catch(() => {});
+          safePlay(media, 'auto-resume');
+        } else if (media.muted && !userWantsMuted) {
+          restoreUnmute(media, 'auto-resume-unmute');
         }
       }, CONFIG.AUTO_RESUME_INTERVAL);
 
@@ -2230,7 +2314,14 @@
             const checkToast = setInterval(() => {
               const toastTexts = document.querySelectorAll('.bpx-player-toast-text');
               if ([...toastTexts].some(el => el.textContent.endsWith('试用中'))) {
-                if (wasPlaying) media.play().catch(() => {});
+                if (wasPlaying) {
+                  media.play().then(() => {
+                    try {
+                      if (media.muted && media.volume === 0) { /* keep */ }
+                      else if (media.muted) { media.muted = false; }
+                    } catch (e) {}
+                  }).catch(() => {});
+                }
                 clearInterval(checkToast);
                 requestTargetQuality('trial-toast-detected');
               }
