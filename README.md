@@ -1,21 +1,32 @@
+<div align="center">
+
 # Bilibili - 未登录自由看
 
-[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Version: alpha.24](https://img.shields.io/badge/version-alpha.24-orange.svg)](#更新日志)
-[![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
-[![jsDelivr](https://img.shields.io/badge/jsDelivr-CDN-blue.svg)](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@37f327759b4590f38493d0d75f789b3e4e12e309/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js)
+**未登录高画质、只读评论与播放器增强，一份脚本集中解决。**
 
-当前版本：`4.0.0-alpha.24`
+[![Version](https://img.shields.io/badge/version-4.0.0--alpha.24-f59e0b?style=for-the-badge)](#更新日志)
+[![License](https://img.shields.io/badge/license-GPL--3.0-2563eb?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0)
+[![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装-f97316?style=for-the-badge)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
+[![jsDelivr](https://img.shields.io/badge/jsDelivr-alpha.24-0284c7?style=for-the-badge)](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@37f327759b4590f38493d0d75f789b3e4e12e309/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js)
 
 在未登录状态下解锁视频画质与只读评论，并提供倍速、前进后退、临时加速、自动暂停防护和直播分区加载兜底。登录后继续保留通用播放器控制。
 
+[安装脚本](#安装) · [快速使用](#快速使用) · [设置说明](#设置说明) · [支持页面](#页面与登录状态) · [更新日志](#更新日志) · [问题反馈](#反馈与支持)
+
+</div>
+
+> [!TIP]
+> 当前版本为 `4.0.0-alpha.24`。普通用户可使用 Greasy Fork，测试最新 alpha 功能可使用固定提交的 jsDelivr 地址。
+
 ## 主要功能
 
-- **画质解锁**：默认尝试获得 1080P 完整媒体流，支持切换 720P、480P、360P；SPA 切视频、分 P 和画质掉档时自动恢复。
-- **播放控制**：原生控制栏倍速、自定义倍速、前进后退、长按前进临时加速，登录与未登录均可使用。
-- **只读评论**：查看视频、合集、活动、动态详情、Opus 和专栏评论，支持最热/最新、无限滚动、分页、页码跳转和子回复展开。
-- **观看防打扰**：隐藏常见登录遮罩和播放器登录提示，拦截常见的未登录自动暂停，同时保留用户主动暂停和静音意图。
-- **直播分区兜底**：直播分区列表异常或疑似被裁剪时自动切换备用接口继续加载。
+| 模块 | 能力 | 使用效果 |
+|---|---|---|
+| **画质解锁** | 1080P / 720P / 480P / 360P | SPA 切视频、分 P 和画质掉档时自动恢复首选画质 |
+| **播放器增强** | 预设倍速、自定义倍速、前进后退、临时加速 | 登录与未登录均可使用，设置自动保存 |
+| **只读评论** | 最热/最新、无限滚动、分页、页码跳转、子回复 | 覆盖视频、合集、活动、动态详情、Opus 和专栏 |
+| **观看防打扰** | 登录遮罩处理、自动暂停防护、静音意图保护 | 保留用户主动暂停和站内初始播放状态 |
+| **直播分区兜底** | 原接口检测、备用接口转换、保守翻页 | 分区列表异常或疑似裁剪时继续加载 |
 
 ## 安装
 
@@ -28,6 +39,9 @@
 | GitHub | [查看源码](https://github.com/zhikanyeye/Bilibili-Free-Quality) | 查看代码、提交记录与 Issues |
 
 安装后打开支持的 B 站页面即可运行。画质、评论、直播和防登录功能建议在未登录窗口中测试。
+
+> [!IMPORTANT]
+> jsDelivr 地址固定到脚本功能提交 `37f3277`，可避免分支后续变化影响当前安装内容。
 
 ## 快速使用
 
@@ -67,6 +81,9 @@
 - 直播间和用户空间中的动态评论入口会跳转到动态或 Opus 详情页，再查看完整评论。
 
 评论模块只提供浏览、排序、翻页和展开回复，不包含发布评论、回复、点赞、举报或删除功能。跳转到较大的未访问页码时，需要逐页取得 API cursor，等待时间会更长。
+
+> [!NOTE]
+> 评论功能定位为未登录浏览工具，所有交互均为只读操作。
 
 ### 使用直播分区兜底
 
@@ -115,6 +132,9 @@
 
 ## 工作原理
 
+<details>
+<summary><strong>展开查看技术实现</strong></summary>
+
 - **协议级解锁**：默认注入会话级 `DedeUserID`，清理低画质 SSR 数据，对 `playurl` 请求按首选画质进行 WBI 重签，并从可播放响应中选择完整媒体流。
 - **客户端兼容**：关闭协议级解锁并刷新后，使用自动点击高清试用、延长试看计时和画质掉档恢复作为备用路径。
 - **评论读取**：直接调用 B 站评论 API 并完成 WBI 签名，在安全的评论容器内渲染只读列表。
@@ -123,14 +143,21 @@
 
 真实登录状态通过带签名的 `DedeUserID__ckMd5` 识别。协议级解锁写入的会话级 `DedeUserID` 只用于未登录画质请求，不会让脚本进入真实登录分支。
 
+</details>
+
 ## 使用说明与限制
+
+<details>
+<summary><strong>展开查看兼容性与边界</strong></summary>
 
 - B 站播放器 DOM 或 API 调整后，控制按钮、评论容器或接口拦截可能需要同步适配。
 - 协议请求未获得完整媒体流时会回退页面原请求，实际可用画质仍受视频源、地区和 B 站接口响应影响。
 - 防自动暂停会识别点击、触摸、Space 和 K 键等常见用户操作，并只在视频已经播放后处理意外暂停。
 - 评论接口、WBI key 或安全容器获取失败时，脚本会跳过评论重绘并在控制台记录原因。
-- 直播兜底专门处理直播分区列表接口，不属于通用直播 API 解锁。
+- 直播兜底专门处理直播分区列表接口，范围聚焦分区列表连续加载。
 - 倍速与跳转控件依赖 B 站当前播放器结构；直播流的跳转效果取决于播放器是否提供 DVR 时间轴。
+
+</details>
 
 ## 功能演示
 
@@ -175,6 +202,14 @@
 - [GitHub Issues](https://github.com/zhikanyeye/Bilibili-Free-Quality/issues)
 - [Greasy Fork 讨论区](https://greasyfork.org/zh-CN/scripts/542804/feedback)
 - 在评论区留言
+
+## 推荐工具
+
+> **AgentRouter 大模型中转站**
+>
+> 免费使用 Claude Opus 4-8、Claude Opus 4-7、GPT-5.5、GLM-5.2 等模型，适合写脚本、改代码和排查问题。
+>
+> [通过邀请链接注册](https://agentrouter.org/register?aff=e8bc)，注册即送好友 **$50 奖励**。
 
 ## 许可证
 
