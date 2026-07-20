@@ -7,7 +7,7 @@
 [![Version](https://img.shields.io/badge/version-4.0.0--alpha.24-f59e0b?style=for-the-badge)](#更新日志)
 [![License](https://img.shields.io/badge/license-GPL--3.0-2563eb?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装-f97316?style=for-the-badge)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
-[![jsDelivr](https://img.shields.io/badge/jsDelivr-alpha.24-0284c7?style=for-the-badge)](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@37f327759b4590f38493d0d75f789b3e4e12e309/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js)
+[![jsDelivr](https://img.shields.io/badge/jsDelivr-alpha.24-0284c7?style=for-the-badge)](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@eb70ac706f26719c9ea5d1267d423e3554f43187/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js)
 
 在未登录状态下解锁视频画质与只读评论，并提供倍速、前进后退、临时加速、自动暂停防护和直播分区加载兜底。登录后继续保留通用播放器控制。
 
@@ -35,13 +35,13 @@
 | 渠道 | 安装地址 | 说明 |
 |---|---|---|
 | Greasy Fork | [安装稳定发布版](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B) | 使用平台更新机制 |
-| jsDelivr | [安装 v4.0.0-alpha.24](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@37f327759b4590f38493d0d75f789b3e4e12e309/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js) | 固定到功能提交 `37f3277` |
+| jsDelivr | [安装 v4.0.0-alpha.24](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@eb70ac706f26719c9ea5d1267d423e3554f43187/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js) | 固定到描述更新提交 `eb70ac7` |
 | GitHub | [查看源码](https://github.com/zhikanyeye/Bilibili-Free-Quality) | 查看代码、提交记录与 Issues |
 
 安装后打开支持的 B 站页面即可运行。画质、评论、直播和防登录功能建议在未登录窗口中测试。
 
 > [!IMPORTANT]
-> jsDelivr 地址固定到脚本功能提交 `37f3277`，可避免分支后续变化影响当前安装内容。
+> jsDelivr 地址固定到脚本描述更新提交 `eb70ac7`，可避免分支后续变化影响当前安装内容。
 
 ## 快速使用
 
