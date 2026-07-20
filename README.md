@@ -3,9 +3,9 @@
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Version: alpha.20](https://img.shields.io/badge/version-alpha.20-orange.svg)](#更新日志)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
-[![jsDelivr](https://img.shields.io/badge/jsDelivr-CDN-blue.svg)](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@v4.0.0-alpha.19/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js)
+[![jsDelivr](https://img.shields.io/badge/jsDelivr-CDN-blue.svg)](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@v4.0.0-alpha.20/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js)
 
-当前开发版本：`4.0.0-alpha.20`（CDN 稳定版仍为 `v4.0.0-alpha.19`）
+当前版本：`4.0.0-alpha.20`
 
 ## 📌 简介
 
@@ -54,8 +54,8 @@
 | 渠道 | 地址 | 用途 |
 |---|---|---|
 | Greasy Fork | [安装稳定发布版](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B) | 推荐给普通用户，使用平台更新机制 |
-| jsDelivr CDN | [安装 v4.0.0-alpha.19](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@v4.0.0-alpha.19/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js) | 版本化固定地址，推荐 |
-| GitHub | [查看开发分支源码](https://github.com/zhikanyeye/Bilibili-Free-Quality/tree/v4.0-protocol-level-unlock) | 查看源码、提交记录和问题反馈 |
+| jsDelivr CDN | [安装 v4.0.0-alpha.20](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@v4.0.0-alpha.20/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js) | 版本化固定地址，推荐 |
+| GitHub | [查看源码](https://github.com/zhikanyeye/Bilibili-Free-Quality) | 查看源码、提交记录和问题反馈 |
 
 jsDelivr 地址格式：
 
@@ -63,7 +63,7 @@ jsDelivr 地址格式：
 https://cdn.jsdelivr.net/gh/user/repo@version/file
 ```
 
-当前已发布 Git tag `v4.0.0-alpha.19`，CDN 使用 `@v4.0.0-alpha.19` 版本化地址。开发分支仍可在 GitHub 查看。
+当前已发布 Git tag `v4.0.0-alpha.20`，CDN 使用 `@v4.0.0-alpha.20` 版本化地址。
 
 | 步骤 | 操作 |
 |---|---|
