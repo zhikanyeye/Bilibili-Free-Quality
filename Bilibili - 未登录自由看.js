@@ -2,7 +2,7 @@
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
 // @version      4.0.0-alpha.24
-// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P，SPA 切视频等待 state 对齐后重签 + 安全改写 player/wbi/v2 登录态；客户端兼容模式自动试用画质 + 拦截画质劫持 · 拦 rcmd 清 buvid3 防登录弹窗 · 彻底屏蔽自动暂停 · 评论按 DD1969 方式只替换评论容器（不全站 hide，保护顶栏）· 播放器原生控制栏倍速按钮 + 全屏可用前进/后退按钮 + 长按前进按钮临时倍速 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 无远程样式依赖
+// @description  🎬 B站未登录自由看 | 协议级 + 客户端双兼容解锁：伪造 DedeUserID · 清空 __playinfo__ SSR · WBI 重签 playurl（try_look=1/qn=80）直出 1080P · SPA 切视频 state 对齐后重签 · 安全改写 player/wbi/v2 登录态；客户端自动试用画质 + 拦截画质劫持 | 拦 rcmd / 清 buvid3 防登录弹窗 · 屏蔽自动暂停 · 只读评论（仅替换评论容器，保护顶栏）· 原生控制栏倍速 · 全屏前进/后退 · 长按前进临时倍速 · 直播分区兜底 · 面板切换 1080/720/480/360P · 无远程样式依赖
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
