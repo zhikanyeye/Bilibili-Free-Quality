@@ -1,11 +1,11 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Version: alpha.20](https://img.shields.io/badge/version-alpha.20-orange.svg)](#更新日志)
+[![Version: alpha.23](https://img.shields.io/badge/version-alpha.23-orange.svg)](#更新日志)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
-[![jsDelivr](https://img.shields.io/badge/jsDelivr-CDN-blue.svg)](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@v4.0.0-alpha.20/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js)
+[![jsDelivr](https://img.shields.io/badge/jsDelivr-CDN-blue.svg)](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@v4.0.0-alpha.23/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js)
 
-当前版本：`4.0.0-alpha.20`
+当前版本：`4.0.0-alpha.23`
 
 ## 📌 简介
 
@@ -54,7 +54,7 @@
 | 渠道 | 地址 | 用途 |
 |---|---|---|
 | Greasy Fork | [安装稳定发布版](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B) | 推荐给普通用户，使用平台更新机制 |
-| jsDelivr CDN | [安装 v4.0.0-alpha.20](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@v4.0.0-alpha.20/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js) | 版本化固定地址，推荐 |
+| jsDelivr CDN | [安装 v4.0.0-alpha.23](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@v4.0.0-alpha.23/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js) | 版本化固定地址，推荐 |
 | GitHub | [查看源码](https://github.com/zhikanyeye/Bilibili-Free-Quality) | 查看源码、提交记录和问题反馈 |
 
 jsDelivr 地址格式：
@@ -63,7 +63,7 @@ jsDelivr 地址格式：
 https://cdn.jsdelivr.net/gh/user/repo@version/file
 ```
 
-当前已发布 Git tag `v4.0.0-alpha.20`，CDN 使用 `@v4.0.0-alpha.20` 版本化地址。
+当前版本发布后使用 Git tag `v4.0.0-alpha.23`，CDN 使用 `@v4.0.0-alpha.23` 版本化地址。
 
 | 步骤 | 操作 |
 |---|---|
@@ -133,6 +133,18 @@ https://cdn.jsdelivr.net/gh/user/repo@version/file
 5. 倍速控制器在登录与未登录状态均安装，等待播放器稳定后接入原生右侧控制栏；SPA 重建播放器时自动重挂载
 
 ## 🔄 更新日志
+
+### v4.0.0-alpha.23 (2026-07-20)
+- **倍速开关修复**：关闭“启用倍速强制”时仅恢复当前媒体为 1 倍速，保留用户已保存的倍速配置，重新开启后可继续使用原倍速
+
+### v4.0.0-alpha.22 (2026-07-20)
+- **WBI 兜底修复**：`/x/web-interface/nav` 返回异常结构时直接降级并抛出可控错误，避免评论签名和 playurl 重签链路被 `TypeError` 打断
+- **评论 SPA 轮询加固**：页面切换检测加入串行闸门，避免网络慢时重复启动评论目标解析和重载流程
+
+### v4.0.0-alpha.21 (2026-07-20)
+- **长按挂载修复**：播放器画面加载后立即绑定长按手势，控制栏隐藏期间也能正常触发
+- **指针事件加固**：长按期间捕获指针并在结束时释放，提升鼠标与触摸设备的松手恢复可靠性
+- **触摸兼容**：禁用播放器画面的系统长按菜单，避免触摸端长按被浏览器提前取消
 
 ### v4.0.0-alpha.20 (2026-07-20)
 - **全屏跳转**：移除 alpha.19 的全屏隐藏限制，半屏、网页全屏和浏览器全屏均显示前进/后退按钮

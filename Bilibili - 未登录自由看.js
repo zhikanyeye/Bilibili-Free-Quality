@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      4.0.0-alpha.20
+// @version      4.0.0-alpha.23
 // @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P，SPA 切视频等待 state 对齐后重签 + 安全改写 player/wbi/v2 登录态；客户端兼容模式自动试用画质 + 拦截画质劫持 · 拦 rcmd 清 buvid3 防登录弹窗 · 彻底屏蔽自动暂停 · 评论按 DD1969 方式只替换评论容器（不全站 hide，保护顶栏）· 播放器原生控制栏倍速按钮 + 全屏可用前进/后退按钮 + 长按临时倍速 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 无远程样式依赖
 // @license      GPL-3.0
 // @author       zhikanyeye
@@ -706,9 +706,12 @@
   let _wbiMixinKeyTs = 0;
   async function getWbiMixinKey() {
     if (_wbiMixinKey && Date.now() - _wbiMixinKeyTs < 3600e3) return _wbiMixinKey;
-    const { img_url, sub_url } = await nativePageFetch('https://api.bilibili.com/x/web-interface/nav', { credentials: 'include' })
+    const navJson = await nativePageFetch('https://api.bilibili.com/x/web-interface/nav', { credentials: 'include' })
       .then(res => res.json())
-      .then(json => json.data.wbi_img);
+      .catch(() => null);
+    const wbiImg = navJson?.code === 0 ? navJson?.data?.wbi_img : null;
+    if (!wbiImg?.img_url || !wbiImg?.sub_url) return null;
+    const { img_url, sub_url } = wbiImg;
     const imgKey = img_url.slice(img_url.lastIndexOf('/') + 1, img_url.lastIndexOf('.'));
     const subKey = sub_url.slice(sub_url.lastIndexOf('/') + 1, sub_url.lastIndexOf('.'));
     const originKey = imgKey + subKey;
@@ -720,6 +723,7 @@
 
   async function getWbiQueryString(params) {
     const mixinKey = await getWbiMixinKey();
+    if (!mixinKey) throw new Error('无法获取 WBI mixin key');
     const p = { ...params };
     delete p.w_rid;
     p.wts = Math.round(Date.now() / 1000);
@@ -2203,48 +2207,55 @@
 
     // SPA 切视频：只重填列表，不重跑全站 DOM hide
     let lastCommentKey = `${commentType}:${commentOid}`;
+    let commentSwitchChecking = false;
     setInterval(async () => {
-      const nextTarget = await resolveCommentTarget();
-      if (!nextTarget?.oid) return;
-      const nextKey = `${nextTarget.type}:${nextTarget.oid}`;
-      if (nextKey === lastCommentKey) return;
-      lastCommentKey = nextKey;
-      commentGeneration++;
-      commentAbortController?.abort();
-      commentAbortController = null;
-      commentIsLoading = false;
-      commentOid = nextTarget.oid;
-      commentType = nextTarget.type;
-      commentCreatorID = nextTarget.creator || 0;
-      console.log(`[评论模块] 检测到页面切换，新 oid=${commentOid}, type=${commentType}`);
+      if (commentSwitchChecking) return;
+      commentSwitchChecking = true;
+      try {
+        const nextTarget = await resolveCommentTarget();
+        if (!nextTarget?.oid) return;
+        const nextKey = `${nextTarget.type}:${nextTarget.oid}`;
+        if (nextKey === lastCommentKey) return;
+        lastCommentKey = nextKey;
+        commentGeneration++;
+        commentAbortController?.abort();
+        commentAbortController = null;
+        commentIsLoading = false;
+        commentOid = nextTarget.oid;
+        commentType = nextTarget.type;
+        commentCreatorID = nextTarget.creator || 0;
+        console.log(`[评论模块] 检测到页面切换，新 oid=${commentOid}, type=${commentType}`);
 
-      // 若壳被 SPA 拆掉，仅在安全 host 上重建
-      if (!document.getElementById('bili-comment-list')) {
-        try {
-          customEl = await setupStandardCommentContainer();
-          bindSortAndPager(customEl);
-          installDuplicateOfficialCommentGuard();
-        } catch (e) {
-          console.warn('[评论模块] SPA 重建跳过:', e.message);
-          return;
+        // 若壳被 SPA 拆掉，仅在安全 host 上重建
+        if (!document.getElementById('bili-comment-list')) {
+          try {
+            customEl = await setupStandardCommentContainer();
+            bindSortAndPager(customEl);
+            installDuplicateOfficialCommentGuard();
+          } catch (e) {
+            console.warn('[评论模块] SPA 重建跳过:', e.message);
+            return;
+          }
         }
-      }
 
-      commentCurrentSortType = COMMENT_SORT.HOT;
-      document.querySelectorAll('#bili-custom-comments .sort-btn, .comment-container .sort-btn').forEach(b => b.classList.remove('active'));
-      document.querySelector('#bili-custom-comments .sort-btn[data-sort="2"], .comment-container .sort-btn[data-sort="2"]')?.classList.add('active');
-      commentNextOffset = '';
-      commentPageOffsets = [''];
-      commentCurrentPage = 0;
-      commentTotalCount = 0;
-      commentIsEnd = false;
-      const totalEl = document.getElementById('bili-total-reply');
-      if (totalEl) totalEl.textContent = '0';
-      const list = document.getElementById('bili-comment-list');
-      if (list) list.innerHTML = '';
-      const endEl = document.getElementById('bili-comment-end');
-      if (endEl) endEl.style.display = 'none';
-      loadCommentPage('', false);
+        commentCurrentSortType = COMMENT_SORT.HOT;
+        document.querySelectorAll('#bili-custom-comments .sort-btn, .comment-container .sort-btn').forEach(b => b.classList.remove('active'));
+        document.querySelector('#bili-custom-comments .sort-btn[data-sort="2"], .comment-container .sort-btn[data-sort="2"]')?.classList.add('active');
+        commentNextOffset = '';
+        commentPageOffsets = [''];
+        commentCurrentPage = 0;
+        commentTotalCount = 0;
+        commentIsEnd = false;
+        const totalEl = document.getElementById('bili-total-reply');
+        if (totalEl) totalEl.textContent = '0';
+        const list = document.getElementById('bili-comment-list');
+        if (list) list.innerHTML = '';
+        const endEl = document.getElementById('bili-comment-end');
+        if (endEl) endEl.style.display = 'none';
+        loadCommentPage('', false);
+      } finally {
+        commentSwitchChecking = false;
+      }
     }, 1500);
   }
 
@@ -2907,6 +2918,7 @@
 .bfq-seek-btn .bfq-seek-time{font-size:11px;font-weight:700;line-height:14px}
 .bfq-hold-rate-indicator{position:absolute;left:50%;top:16%;z-index:22;transform:translate(-50%,-8px);padding:8px 14px;border-radius:18px;background:rgba(0,0,0,.68);color:#fff;font:600 14px/1.2 sans-serif;pointer-events:none;opacity:0;visibility:hidden;transition:opacity .18s,transform .18s,visibility .18s}
 .bfq-hold-rate-indicator.show{opacity:1;visibility:visible;transform:translate(-50%,0)}
+.bpx-player-video-wrap,.bilibili-player-video-wrap{-webkit-touch-callout:none}
     `);
 
     const SPEED_PRESETS = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3];
@@ -2949,6 +2961,7 @@
     let holdRateActive = false;
     let holdRateMedia = null;
     let holdRestoreRate = 1;
+    let holdPointerHost = null;
     let suppressNextPlayerClick = false;
     const boundSeekHosts = new WeakSet();
 
@@ -3066,7 +3079,7 @@
           if (options.playbackRate !== 1) startEnforce();
         } else {
           stopEnforce();
-          setRate(1);
+          document.querySelectorAll('video, audio').forEach(m => applyRate(m, 1));
         }
       }
     };
@@ -3119,7 +3132,13 @@
 
     const restoreHoldRate = () => {
       clearHoldTimer();
+      if (holdPointerHost && holdPointerId != null) {
+        try {
+          if (holdPointerHost.hasPointerCapture?.(holdPointerId)) holdPointerHost.releasePointerCapture(holdPointerId);
+        } catch (e) {}
+      }
       holdPointerId = null;
+      holdPointerHost = null;
       if (!holdRateActive) return;
       const media = holdRateMedia;
       const restoreRate = holdRestoreRate;
@@ -3151,6 +3170,8 @@
       if (event.target.closest?.('.bfq-seek-btn')) return;
       restoreHoldRate();
       holdPointerId = event.pointerId;
+      holdPointerHost = event.currentTarget;
+      try { holdPointerHost.setPointerCapture?.(holdPointerId); } catch (e) {}
       holdStartX = event.clientX;
       holdStartY = event.clientY;
       holdTimer = setTimeout(activateHoldRate, 2000);
@@ -3223,8 +3244,9 @@
 
     const mount = () => {
       const ui = getPlayerUi();
-      if (!isPlayerUiReady(ui)) return;
+      if (!ui?.video?.isConnected || !ui?.videoWrap?.isConnected) return;
       mountSeekControls(ui);
+      if (!isPlayerUiReady(ui)) return;
       if (controlEl?.isConnected && controlEl.parentElement === ui.controls) return;
 
       controlEl?.remove();
