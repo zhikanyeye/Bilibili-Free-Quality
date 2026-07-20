@@ -709,7 +709,8 @@
     const navJson = await nativePageFetch('https://api.bilibili.com/x/web-interface/nav', { credentials: 'include' })
       .then(res => res.json())
       .catch(() => null);
-    const wbiImg = navJson?.code === 0 ? navJson?.data?.wbi_img : null;
+    // 未登录时 nav 返回 code=-101，但 data.wbi_img 仍是有效的 WBI 签名材料。
+    const wbiImg = navJson?.data?.wbi_img || null;
     if (!wbiImg?.img_url || !wbiImg?.sub_url) return null;
     const { img_url, sub_url } = wbiImg;
     const imgKey = img_url.slice(img_url.lastIndexOf('/') + 1, img_url.lastIndexOf('.'));
