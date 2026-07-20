@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      4.0.0-alpha.23
-// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P，SPA 切视频等待 state 对齐后重签 + 安全改写 player/wbi/v2 登录态；客户端兼容模式自动试用画质 + 拦截画质劫持 · 拦 rcmd 清 buvid3 防登录弹窗 · 彻底屏蔽自动暂停 · 评论按 DD1969 方式只替换评论容器（不全站 hide，保护顶栏）· 播放器原生控制栏倍速按钮 + 全屏可用前进/后退按钮 + 长按临时倍速 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 无远程样式依赖
+// @version      4.0.0-alpha.24
+// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P，SPA 切视频等待 state 对齐后重签 + 安全改写 player/wbi/v2 登录态；客户端兼容模式自动试用画质 + 拦截画质劫持 · 拦 rcmd 清 buvid3 防登录弹窗 · 彻底屏蔽自动暂停 · 评论按 DD1969 方式只替换评论容器（不全站 hide，保护顶栏）· 播放器原生控制栏倍速按钮 + 全屏可用前进/后退按钮 + 长按前进按钮临时倍速 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 无远程样式依赖
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -2939,7 +2939,7 @@
 .bfq-seek-btn .bfq-seek-time{font-size:11px;font-weight:700;line-height:14px}
 .bfq-hold-rate-indicator{position:absolute;left:50%;top:16%;z-index:22;transform:translate(-50%,-8px);padding:8px 14px;border-radius:18px;background:rgba(0,0,0,.68);color:#fff;font:600 14px/1.2 sans-serif;pointer-events:none;opacity:0;visibility:hidden;transition:opacity .18s,transform .18s,visibility .18s}
 .bfq-hold-rate-indicator.show{opacity:1;visibility:visible;transform:translate(-50%,0)}
-.bpx-player-video-wrap,.bilibili-player-video-wrap{-webkit-touch-callout:none}
+.bfq-seek-btn[data-seek-action="forward"]{-webkit-touch-callout:none;touch-action:none}
     `);
 
     const SPEED_PRESETS = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3];
@@ -2983,7 +2983,7 @@
     let holdRateMedia = null;
     let holdRestoreRate = 1;
     let holdPointerHost = null;
-    let suppressNextPlayerClick = false;
+    let suppressNextForwardClick = false;
     const boundSeekHosts = new WeakSet();
 
     const syncFullscreenUi = () => {
@@ -3028,7 +3028,7 @@
         </div>
         <div class="bfq-divider"></div>
         <div class="bfq-custom bfq-hold-rate-config">
-          <div class="bfq-custom-label">长按 2 秒临时倍速 (1-16)</div>
+          <div class="bfq-custom-label">长按前进按钮 2 秒临时倍速 (1-16)</div>
           <div class="bfq-custom-row">
             <input data-hold-rate type="number" min="1" max="16" step="0.25" value="${options.holdPlaybackRate}" title="临时倍速" />
             <button data-action="apply-hold-rate">应用</button>
@@ -3086,6 +3086,7 @@
           options.holdPlaybackRate = Math.max(1, Math.min(16, Number.isFinite(value) ? value : 2));
           GM_setValue('holdPlaybackRate', options.holdPlaybackRate);
           refreshPop();
+          refreshSeekLabels();
         }
         return;
       }
@@ -3122,7 +3123,7 @@
       const backwardButton = seekLayerEl.querySelector('[data-seek-action="backward"]');
       const forwardButton = seekLayerEl.querySelector('[data-seek-action="forward"]');
       if (backwardButton) backwardButton.title = `后退 ${options.seekBackwardSeconds} 秒`;
-      if (forwardButton) forwardButton.title = `前进 ${options.seekForwardSeconds} 秒`;
+      if (forwardButton) forwardButton.title = `点击前进 ${options.seekForwardSeconds} 秒，长按临时 ${fmtRate(options.holdPlaybackRate)}`;
     };
 
     const hideSeekControls = () => {
@@ -3151,8 +3152,7 @@
       holdTimer = null;
     };
 
-    const restoreHoldRate = () => {
-      clearHoldTimer();
+    const releaseHoldPointer = () => {
       if (holdPointerHost && holdPointerId != null) {
         try {
           if (holdPointerHost.hasPointerCapture?.(holdPointerId)) holdPointerHost.releasePointerCapture(holdPointerId);
@@ -3160,6 +3160,11 @@
       }
       holdPointerId = null;
       holdPointerHost = null;
+    };
+
+    const restoreHoldRate = () => {
+      clearHoldTimer();
+      releaseHoldPointer();
       if (!holdRateActive) return;
       const media = holdRateMedia;
       const restoreRate = holdRestoreRate;
@@ -3173,7 +3178,7 @@
     const activateHoldRate = () => {
       const video = getPlayerUi()?.video;
       if (!video || video.paused || !Number.isFinite(video.playbackRate)) {
-        holdPointerId = null;
+        releaseHoldPointer();
         return;
       }
       holdRateMedia = video;
@@ -3188,7 +3193,6 @@
 
     const beginHoldRate = (event) => {
       if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
-      if (event.target.closest?.('.bfq-seek-btn')) return;
       restoreHoldRate();
       holdPointerId = event.pointerId;
       holdPointerHost = event.currentTarget;
@@ -3202,7 +3206,7 @@
       if (event.pointerId !== holdPointerId || holdRateActive) return;
       if (Math.hypot(event.clientX - holdStartX, event.clientY - holdStartY) > 12) {
         clearHoldTimer();
-        holdPointerId = null;
+        releaseHoldPointer();
       }
     };
 
@@ -3211,8 +3215,8 @@
       const wasActive = holdRateActive;
       restoreHoldRate();
       if (wasActive) {
-        suppressNextPlayerClick = true;
-        setTimeout(() => { suppressNextPlayerClick = false; }, 500);
+        suppressNextForwardClick = true;
+        setTimeout(() => { suppressNextForwardClick = false; }, 500);
       }
     };
 
@@ -3226,7 +3230,7 @@
           <button class="bfq-seek-btn" data-seek-action="backward" title="后退 ${options.seekBackwardSeconds} 秒">
             <span class="bfq-seek-icon">↶</span><span class="bfq-seek-time">${options.seekBackwardSeconds}s</span>
           </button>
-          <button class="bfq-seek-btn" data-seek-action="forward" title="前进 ${options.seekForwardSeconds} 秒">
+          <button class="bfq-seek-btn" data-seek-action="forward" title="点击前进 ${options.seekForwardSeconds} 秒，长按临时 ${fmtRate(options.holdPlaybackRate)}">
             <span class="bfq-seek-icon">↷</span><span class="bfq-seek-time">${options.seekForwardSeconds}s</span>
           </button>`;
         ui.videoWrap.style.position = ui.videoWrap.style.position || 'relative';
@@ -3239,23 +3243,22 @@
           button.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
+            if (button.dataset.seekAction === 'forward' && suppressNextForwardClick) {
+              suppressNextForwardClick = false;
+              return;
+            }
             seekVideo(button.dataset.seekAction);
           });
         });
+        const forwardButton = seekLayerEl.querySelector('[data-seek-action="forward"]');
+        forwardButton?.addEventListener('pointerdown', beginHoldRate, true);
+        forwardButton?.addEventListener('contextmenu', (event) => {
+          if (holdPointerId != null || holdRateActive) event.preventDefault();
+        }, true);
       }
       if (!boundSeekHosts.has(ui.videoWrap)) {
         boundSeekHosts.add(ui.videoWrap);
-        ui.videoWrap.addEventListener('pointerdown', beginHoldRate, true);
-        ui.videoWrap.addEventListener('contextmenu', (event) => {
-          if (holdPointerId != null || holdRateActive) event.preventDefault();
-        }, true);
         ui.videoWrap.addEventListener('click', (event) => {
-          if (suppressNextPlayerClick) {
-            suppressNextPlayerClick = false;
-            event.preventDefault();
-            event.stopImmediatePropagation();
-            return;
-          }
           if (event.target.closest?.('.bfq-seek-btn')) return;
           showSeekControls();
         }, true);
