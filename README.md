@@ -1,9 +1,9 @@
 # Bilibili - 未登录自由看
 
-[![License: GPL-3.0](https://img.shields.io/github/license/zhikanyeye/Bilibili-Free-Quality.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Version: alpha.19](https://img.shields.io/badge/version-alpha.19-orange.svg)](#更新日志)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
-[![jsDelivr](https://img.shields.io/badge/jsDelivr-CDN-blue.svg)](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@c817deb/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js)
+[![jsDelivr](https://img.shields.io/badge/jsDelivr-CDN-blue.svg)](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@e88cf7b/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js)
 
 当前版本：`4.0.0-alpha.19`
 
@@ -53,7 +53,7 @@
 | 渠道 | 地址 | 用途 |
 |---|---|---|
 | Greasy Fork | [安装稳定发布版](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B) | 推荐给普通用户，使用平台更新机制 |
-| jsDelivr CDN | [安装 alpha.18 固定快照](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@c817deb/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js) | 已验证可用，锁定当前提交 |
+| jsDelivr CDN | [安装 alpha.19 固定快照](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@e88cf7b/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js) | 已验证可用，锁定当前提交 |
 | GitHub | [查看开发分支源码](https://github.com/zhikanyeye/Bilibili-Free-Quality/tree/v4.0-protocol-level-unlock) | 查看源码、提交记录和问题反馈 |
 
 jsDelivr 地址格式：
@@ -62,7 +62,7 @@ jsDelivr 地址格式：
 https://cdn.jsdelivr.net/gh/user/repo@version/file
 ```
 
-当前仓库尚未发布 Git tag，因此 CDN 使用提交哈希固定版本。正式发布 `v4.0.0-alpha.18` tag 后，可使用 `@v4.0.0-alpha.18` 获得更清晰的版本化地址。当前开发分支由 GitHub 直接查看。
+当前仓库尚未发布 Git tag，因此 CDN 使用提交哈希固定版本。正式发布 `v4.0.0-alpha.19` tag 后，可使用 `@v4.0.0-alpha.19` 获得更清晰的版本化地址。当前开发分支由 GitHub 直接查看。
 
 | 步骤 | 操作 |
 |---|---|
