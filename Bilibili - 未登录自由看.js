@@ -287,33 +287,26 @@
   // 强制切到目标画质（协议级也走，避免卡在 480/360）
   function forcePlayerTargetQuality(reason = 'protocol') {
     try {
-      const target = getTargetQn();
+      const map = { 1080: 80, 720: 64, 480: 32, 360: 16 };
+      const target = map[options.preferQuality] || 80;
       const player = unsafeWindow.player;
       if (!player) return false;
 
-      const supported = player.getSupportedQualityList?.();
-      const supportedQn = Array.isArray(supported)
-        ? supported.map(Number).filter(Number.isFinite)
-        : [];
-      let qn = target;
-      if (supportedQn.length) {
-        if (supportedQn.includes(target)) qn = target;
-        else {
-          const lower = supportedQn.filter(q => q <= target);
-          qn = lower.length ? Math.max(...lower) : Math.max(...supportedQn);
-        }
-      }
-
-      const currentQn = Number(player.getCurrentQuality?.());
-      const cur = Number.isFinite(currentQn) ? currentQn : null;
-      if (cur != null && (cur === qn || (target >= 80 && cur > qn))) return true;
-
       // 部分版本优先 setQuality
       if (typeof player.setQuality === 'function') {
-        Promise.resolve(player.setQuality(qn)).catch(() => {});
+        Promise.resolve(player.setQuality(target)).catch(() => {});
       }
 
       if (typeof player.requestQuality === 'function') {
+        const supported = player.getSupportedQualityList?.();
+        let qn = target;
+        if (Array.isArray(supported) && supported.length) {
+          if (supported.includes(target)) qn = target;
+          else {
+            const lower = supported.filter(q => q <= target);
+            qn = lower.length ? Math.max(...lower) : Math.max(...supported);
+          }
+        }
         Promise.resolve(player.requestQuality(qn)).catch(() => {});
       } else if (typeof player.setQuality !== 'function') {
         return false;
@@ -321,6 +314,7 @@
 
       // 写入高清流后，部分场景需 reload 媒体源才能真正切档
       try {
+        const cur = player.getCurrentQuality?.();
         if (cur != null && cur < target && typeof player.reload === 'function') {
           // 仅在持续低档时 reload，避免频繁打断
           if (!player.__bfqReloadAt || Date.now() - player.__bfqReloadAt > 4000) {
@@ -467,21 +461,16 @@
       } catch (e) {}
 
       if (typeof player.setQuality === 'function') {
-        const currentQn = Number(player.getCurrentQuality?.());
-        const cur = Number.isFinite(currentQn) ? currentQn : null;
-        if (cur == null || cur < target) Promise.resolve(player.setQuality(target)).catch(() => {});
+        Promise.resolve(player.setQuality(target)).catch(() => {});
       }
       if (typeof player.requestQuality === 'function') {
-        const currentQn = Number(player.getCurrentQuality?.());
-        const cur = Number.isFinite(currentQn) ? currentQn : null;
-        if (cur == null || cur < target) Promise.resolve(player.requestQuality(target)).catch(() => {});
+        Promise.resolve(player.requestQuality(target)).catch(() => {});
       }
 
       // 若仍低档，延迟再推一轮（给 SPA 播放器换源时间）
       setTimeout(() => {
         try {
-          const currentQn = Number(player.getCurrentQuality?.());
-          const cur = Number.isFinite(currentQn) ? currentQn : null;
+          const cur = player.getCurrentQuality?.();
           if (cur != null && cur < target) {
             if (typeof player.requestQuality === 'function') {
               Promise.resolve(player.requestQuality(target)).catch(() => {});
@@ -2704,14 +2693,7 @@
     const requestTargetQuality = (reason = 'manual') => {
       const target = TARGET_QUALITY();
       try {
-        const currentQn = Number(unsafeWindow.player?.getCurrentQuality?.());
-        const cur = Number.isFinite(currentQn) ? currentQn : null;
-        if (cur === target || (target >= 80 && cur > target)) return true;
-        const supported = unsafeWindow.player?.getSupportedQualityList?.();
-        const supportedQn = Array.isArray(supported)
-          ? supported.map(Number).filter(Number.isFinite)
-          : [];
-        if (supportedQn.includes(target)) {
+        if (unsafeWindow.player?.getSupportedQualityList?.()?.includes(target)) {
           Promise.resolve(unsafeWindow.player.requestQuality(target)).catch((err) => {
             if (!String(err?.message || err).includes('Same as current quality')) {
               console.warn('[Bilibili脚本] 画质切换失败:', err, '来源:', reason);
