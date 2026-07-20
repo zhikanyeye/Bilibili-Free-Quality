@@ -1,11 +1,11 @@
 # Bilibili - 未登录自由看
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Version: alpha.23](https://img.shields.io/badge/version-alpha.23-orange.svg)](#更新日志)
+[![Version: alpha.24](https://img.shields.io/badge/version-alpha.24-orange.svg)](#更新日志)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-orange)](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B)
-[![jsDelivr](https://img.shields.io/badge/jsDelivr-CDN-blue.svg)](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@f319d565cf0c75dcecc45799fe8ff09b1f51ceb3/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js)
+[![jsDelivr](https://img.shields.io/badge/jsDelivr-CDN-blue.svg)](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@37f327759b4590f38493d0d75f789b3e4e12e309/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js)
 
-当前版本：`4.0.0-alpha.23`
+当前版本：`4.0.0-alpha.24`
 
 ## 📌 简介
 
@@ -38,7 +38,7 @@
 - ✅ **尊重自动播放设置**：防暂停逻辑只在已开始播放后恢复，不再强制初始自动播放
 - ✅ **全登录态倍速播放**：登录与未登录均在播放器原生控制栏显示倍速按钮，支持预设和自定义倍速；全屏时自动隐藏
 - ✅ **全屏左右跳转**：半屏、网页全屏和浏览器全屏点击视频区均显示左右小图标，默认后退 10 秒、前进 15 秒
-- ✅ **长按临时倍速**：按住视频画面 2 秒进入自定义临时倍速，松手恢复长按前的实际倍速
+- ✅ **长按临时倍速**：按住前进按钮 2 秒进入自定义临时倍速，松手恢复长按前的实际倍速
 - ✅ **可视化面板**，一键切换 1080P / 720P / 480P / 360P，并可切换解锁模式
 - ✅ **Edge / Chrome / Firefox** 全平台兼容
 - ✅ **登录态隔离**：登录后仅保留通用倍速功能，未登录解锁、评论重绘和防登录逻辑自动停用
@@ -54,7 +54,7 @@
 | 渠道 | 地址 | 用途 |
 |---|---|---|
 | Greasy Fork | [安装稳定发布版](https://greasyfork.org/zh-CN/scripts/542804-bilibili-%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B) | 推荐给普通用户，使用平台更新机制 |
-| jsDelivr CDN | [安装 v4.0.0-alpha.23 修正版](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@f319d565cf0c75dcecc45799fe8ff09b1f51ceb3/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js) | 固定提交地址，包含未登录协议解锁链路加固 |
+| jsDelivr CDN | [安装 v4.0.0-alpha.24](https://cdn.jsdelivr.net/gh/zhikanyeye/Bilibili-Free-Quality@37f327759b4590f38493d0d75f789b3e4e12e309/Bilibili%20-%20%E6%9C%AA%E7%99%BB%E5%BD%95%E8%87%AA%E7%94%B1%E7%9C%8B.js) | 固定提交地址，包含协议解锁加固与前进按钮长按倍速 |
 | GitHub | [查看源码](https://github.com/zhikanyeye/Bilibili-Free-Quality) | 查看源码、提交记录和问题反馈 |
 
 jsDelivr 地址格式：
@@ -63,7 +63,7 @@ jsDelivr 地址格式：
 https://cdn.jsdelivr.net/gh/user/repo@version/file
 ```
 
-当前脚本版本保持 `v4.0.0-alpha.23`，CDN 使用 `@f319d565cf0c75dcecc45799fe8ff09b1f51ceb3` 固定提交地址提供未登录协议解锁修正版。
+当前脚本版本为 `v4.0.0-alpha.24`，CDN 使用 `@37f327759b4590f38493d0d75f789b3e4e12e309` 固定提交地址提供协议解锁加固与前进按钮长按倍速版本。
 
 | 步骤 | 操作 |
 |---|---|
@@ -83,7 +83,7 @@ https://cdn.jsdelivr.net/gh/user/repo@version/file
 - **倍速播放**：0.5 / 0.75 / 1 / 1.25 / 1.5 / 2 / 2.5 / 3 倍预设，支持 0.07-16 自定义输入
 - **倍速强制**：开 / 关；已选择倍速通过 `GM_setValue` 持久保存，SPA 切视频后自动恢复
 - **左右跳转**：后退默认 10 秒、前进默认 15 秒，可在倍速弹层中分别设置 1-300 秒
-- **长按临时倍速**：默认 2 倍，可在倍速弹层中设置 1-16 倍；长按 2 秒生效，松手恢复原倍速
+- **长按临时倍速**：默认 2 倍，可在倍速弹层中设置 1-16 倍；长按前进按钮 2 秒生效，松手恢复原倍速
 - **登录后行为**：保留倍速控制器，其余未登录专属功能自动停用
 
 ## 📊 脚本信息
@@ -133,6 +133,11 @@ https://cdn.jsdelivr.net/gh/user/repo@version/file
 5. 倍速控制器在登录与未登录状态均安装，等待播放器稳定后接入原生右侧控制栏；SPA 重建播放器时自动重挂载
 
 ## 🔄 更新日志
+
+### v4.0.0-alpha.24 (2026-07-20)
+- **前进按钮复用**：短按前进按钮继续按配置跳转，长按 2 秒进入临时倍速，保持播放器界面轻量
+- **原生交互恢复**：播放器画面不再监听长按或屏蔽系统菜单，保留 B 站内置复制视频地址等操作
+- **手势状态加固**：移动取消、暂停状态和松手场景统一释放 Pointer Capture，避免后续按钮手势受残留状态影响
 
 ### v4.0.0-alpha.23 (2026-07-20)
 - **倍速开关修复**：关闭“启用倍速强制”时仅恢复当前媒体为 1 倍速，保留用户已保存的倍速配置，重新开启后可继续使用原倍速
