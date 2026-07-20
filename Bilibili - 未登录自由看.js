@@ -291,6 +291,12 @@
       const player = unsafeWindow.player;
       if (!player) return false;
 
+      // 协议模式直接向播放器提供目标 playurl。播放器的 UI 画质状态可能仍是旧值，
+      // 此时调用 setQuality/requestQuality 会走登录校验并反复提示切换失败。
+      if (options.enableProtocolUnlock) {
+        return maxQnOfPlayurl(_playinfoCache) >= target;
+      }
+
       const supported = player.getSupportedQualityList?.();
       const supportedQn = Array.isArray(supported)
         ? supported.map(Number).filter(Number.isFinite)
@@ -466,6 +472,10 @@
         }
       } catch (e) {}
 
+      // 协议模式已经通过 updatePlayurl 一类入口替换媒体源，继续调用画质菜单接口
+      // 会按播放器残留的未登录状态校验，造成重复提示和切换失败。
+      if (options.enableProtocolUnlock) return;
+
       if (typeof player.setQuality === 'function') {
         const currentQn = Number(player.getCurrentQuality?.());
         const cur = Number.isFinite(currentQn) ? currentQn : null;
@@ -614,6 +624,9 @@
           const supported = player?.getSupportedQualityList?.();
           if (cur == null) return;
 
+          // 协议解锁是否成功以已写入的 playurl 为准，播放器 UI 的当前画质可能仍停留在旧值。
+          if (options.enableProtocolUnlock && maxQnOfPlayurl(_playinfoCache) >= target) return;
+
           // 菜单已有 1080 但当前仍是 360：说明流未真正切档
           const stuckLow = cur < target;
           const menuHasTarget = Array.isArray(supported) && supported.includes(target);
@@ -668,6 +681,7 @@
         if (!media || media.dataset.bfqQualityHook) return;
         media.dataset.bfqQualityHook = '1';
         const reforce = () => {
+          if (options.enableProtocolUnlock && maxQnOfPlayurl(_playinfoCache) >= getTargetQn()) return;
           scheduleForceQuality(6, 400);
           if (options.enableProtocolUnlock) {
             const cur = unsafeWindow.player?.getCurrentQuality?.();
