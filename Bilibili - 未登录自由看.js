@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili - 未登录自由看
 // @namespace    https://bilibili.com/
-// @version      4.0.0-alpha.19
-// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P，SPA 切视频等待 state 对齐后重签 + 安全改写 player/wbi/v2 登录态；客户端兼容模式自动试用画质 + 拦截画质劫持 · 拦 rcmd 清 buvid3 防登录弹窗 · 彻底屏蔽自动暂停 · 评论按 DD1969 方式只替换评论容器（不全站 hide，保护顶栏）· 播放器原生控制栏倍速按钮 + 点击视频后显示前进/后退按钮 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 无远程样式依赖
+// @version      4.0.0-alpha.20
+// @description  🎬 B 站未登录解放脚本 | 双兼容解锁：协议级 + 客户端兼容双重保护——协议级模式伪造 DedeUserID cookie + 清空 __playinfo__ SSR + 重签 WBI playurl（try_look=1/qn=80）服务端直接出 1080P，SPA 切视频等待 state 对齐后重签 + 安全改写 player/wbi/v2 登录态；客户端兼容模式自动试用画质 + 拦截画质劫持 · 拦 rcmd 清 buvid3 防登录弹窗 · 彻底屏蔽自动暂停 · 评论按 DD1969 方式只替换评论容器（不全站 hide，保护顶栏）· 播放器原生控制栏倍速按钮 + 全屏可用前进/后退按钮 + 长按临时倍速 · 直播分区接口兜底 · 可视化面板可切 1080/720/480/360P · 无远程样式依赖
 // @license      GPL-3.0
 // @author       zhikanyeye
 // @match        https://www.bilibili.com/video/*
@@ -54,8 +54,9 @@
     playbackRate: Number(GM_getValue('playbackRate', 1)) || 1,
     customPlaybackRate: Number(GM_getValue('customPlaybackRate', 1.5)) || 1.5,
     enablePlaybackRateControl: GM_getValue('enablePlaybackRateControl', true),
-    seekBackwardSeconds: Number(GM_getValue('seekBackwardSeconds', 10)) || 10,
-    seekForwardSeconds: Number(GM_getValue('seekForwardSeconds', 15)) || 15
+    seekBackwardSeconds: Math.max(1, Math.min(300, Math.round(Number(GM_getValue('seekBackwardSeconds', 10)) || 10))),
+    seekForwardSeconds: Math.max(1, Math.min(300, Math.round(Number(GM_getValue('seekForwardSeconds', 15)) || 15))),
+    holdPlaybackRate: Math.max(1, Math.min(16, Number(GM_getValue('holdPlaybackRate', 2)) || 2))
   };
 
   const PAGE_RE = {
@@ -2834,10 +2835,11 @@
     });
 
     const applyToAllMedia = () => {
-      if (!options.enablePlaybackRateControl || options.playbackRate === 1) return;
+      if (!options.enablePlaybackRateControl && !holdRateActive) return;
       document.querySelectorAll('video, audio').forEach(m => {
         if (!isBiliMedia(m)) return;
-        const target = options.playbackRate;
+        const target = holdRateActive && m === holdRateMedia ? options.holdPlaybackRate : options.playbackRate;
+        if (target === 1) return;
         const cur = ogDesc.get.call(m);
         if (Math.abs(cur - target) > 0.001) applyRate(m, target);
       });
@@ -2860,8 +2862,10 @@
 
     document.addEventListener('ratechange', (e) => {
       const m = e.target;
-      if (!options.enablePlaybackRateControl || !isBiliMedia(m)) return;
-      const target = clipsTargetRate.get(m) || options.playbackRate;
+      if ((!options.enablePlaybackRateControl && !(holdRateActive && m === holdRateMedia)) || !isBiliMedia(m)) return;
+      const target = holdRateActive && m === holdRateMedia
+        ? options.holdPlaybackRate
+        : (clipsTargetRate.get(m) || options.playbackRate);
       if (!target || target === 1) return;
       const cur = ogDesc.get.call(m);
       if (Math.abs(cur - target) > 0.001) ogDesc.set.call(m, target);
@@ -2901,7 +2905,8 @@
 .bfq-seek-btn:hover{background:rgba(0,0,0,.75);transform:scale(1.06)}
 .bfq-seek-btn .bfq-seek-icon{font-size:22px;line-height:20px}
 .bfq-seek-btn .bfq-seek-time{font-size:11px;font-weight:700;line-height:14px}
-:fullscreen .bfq-seek-layer,:-webkit-full-screen .bfq-seek-layer,.bpx-state-fullscreen .bfq-seek-layer,.bpx-state-webscreen .bfq-seek-layer{display:none!important}
+.bfq-hold-rate-indicator{position:absolute;left:50%;top:16%;z-index:22;transform:translate(-50%,-8px);padding:8px 14px;border-radius:18px;background:rgba(0,0,0,.68);color:#fff;font:600 14px/1.2 sans-serif;pointer-events:none;opacity:0;visibility:hidden;transition:opacity .18s,transform .18s,visibility .18s}
+.bfq-hold-rate-indicator.show{opacity:1;visibility:visible;transform:translate(-50%,0)}
     `);
 
     const SPEED_PRESETS = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3];
@@ -2936,13 +2941,21 @@
     let popEl = null;
     let seekLayerEl = null;
     let seekHideTimer = null;
+    let holdIndicatorEl = null;
+    let holdTimer = null;
+    let holdPointerId = null;
+    let holdStartX = 0;
+    let holdStartY = 0;
+    let holdRateActive = false;
+    let holdRateMedia = null;
+    let holdRestoreRate = 1;
+    let suppressNextPlayerClick = false;
     const boundSeekHosts = new WeakSet();
 
     const syncFullscreenUi = () => {
       const isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
       if (controlEl) controlEl.style.display = isFullscreen ? 'none' : '';
       if (isFullscreen && popEl) popEl.classList.remove('show');
-      if (isFullscreen && seekLayerEl) seekLayerEl.classList.remove('show');
     };
 
     document.addEventListener('fullscreenchange', syncFullscreenUi);
@@ -2980,6 +2993,14 @@
           </div>
         </div>
         <div class="bfq-divider"></div>
+        <div class="bfq-custom bfq-hold-rate-config">
+          <div class="bfq-custom-label">长按 2 秒临时倍速 (1-16)</div>
+          <div class="bfq-custom-row">
+            <input data-hold-rate type="number" min="1" max="16" step="0.25" value="${options.holdPlaybackRate}" title="临时倍速" />
+            <button data-action="apply-hold-rate">应用</button>
+          </div>
+        </div>
+        <div class="bfq-divider"></div>
         <div class="bfq-toggle" data-toggle="enable">
           <span>启用倍速强制</span>
           <span class="bfq-mini-switch ${options.enablePlaybackRateControl ? 'on' : ''}"></span>
@@ -2995,7 +3016,7 @@
       applyToAllMedia();
       refreshBtnLabel();
       refreshPop();
-      if (r !== 1) startEnforce(); else stopEnforce();
+      if (options.enablePlaybackRateControl && r !== 1) startEnforce(); else stopEnforce();
       console.log('[Bilibili脚本] 倍速设置为', r);
     };
 
@@ -3026,6 +3047,11 @@
           GM_setValue('seekForwardSeconds', forward);
           refreshPop();
           refreshSeekLabels();
+        } else if (applyBtn.dataset.action === 'apply-hold-rate') {
+          const value = Number(applyBtn.closest('.bfq-hold-rate-config')?.querySelector('[data-hold-rate]')?.value);
+          options.holdPlaybackRate = Math.max(1, Math.min(16, Number.isFinite(value) ? value : 2));
+          GM_setValue('holdPlaybackRate', options.holdPlaybackRate);
+          refreshPop();
         }
         return;
       }
@@ -3072,10 +3098,6 @@
     };
 
     const showSeekControls = () => {
-      const ui = getPlayerUi();
-      const isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
-      const classText = `${ui?.player?.className || ''} ${document.body?.className || ''}`;
-      if (isFullscreen || /bpx-state-(?:full|web)screen/.test(classText)) return;
       seekLayerEl?.classList.add('show');
       if (seekHideTimer) clearTimeout(seekHideTimer);
       seekHideTimer = setTimeout(hideSeekControls, 2000);
@@ -3088,6 +3110,68 @@
       const maxTime = Number.isFinite(video.duration) ? video.duration : video.currentTime + Math.max(delta, 0);
       video.currentTime = Math.max(0, Math.min(maxTime, video.currentTime + delta));
       showSeekControls();
+    };
+
+    const clearHoldTimer = () => {
+      if (holdTimer) clearTimeout(holdTimer);
+      holdTimer = null;
+    };
+
+    const restoreHoldRate = () => {
+      clearHoldTimer();
+      holdPointerId = null;
+      if (!holdRateActive) return;
+      const media = holdRateMedia;
+      const restoreRate = holdRestoreRate;
+      holdRateActive = false;
+      holdRateMedia = null;
+      holdIndicatorEl?.classList.remove('show');
+      if (media?.isConnected) applyRate(media, restoreRate);
+      applyToAllMedia();
+    };
+
+    const activateHoldRate = () => {
+      const video = getPlayerUi()?.video;
+      if (!video || video.paused || !Number.isFinite(video.playbackRate)) {
+        holdPointerId = null;
+        return;
+      }
+      holdRateMedia = video;
+      holdRestoreRate = ogDesc.get.call(video) || options.playbackRate || 1;
+      holdRateActive = true;
+      applyRate(video, options.holdPlaybackRate);
+      if (holdIndicatorEl) {
+        holdIndicatorEl.textContent = `${fmtRate(options.holdPlaybackRate)} 临时倍速`;
+        holdIndicatorEl.classList.add('show');
+      }
+    };
+
+    const beginHoldRate = (event) => {
+      if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
+      if (event.target.closest?.('.bfq-seek-btn')) return;
+      restoreHoldRate();
+      holdPointerId = event.pointerId;
+      holdStartX = event.clientX;
+      holdStartY = event.clientY;
+      holdTimer = setTimeout(activateHoldRate, 2000);
+    };
+
+    const moveHoldRate = (event) => {
+      if (event.pointerId !== holdPointerId || holdRateActive) return;
+      if (Math.hypot(event.clientX - holdStartX, event.clientY - holdStartY) > 12) {
+        clearHoldTimer();
+        holdPointerId = null;
+      }
+    };
+
+    const endHoldRate = (event) => {
+      if (holdPointerId == null || (event?.pointerId != null && event.pointerId !== holdPointerId)) return;
+      const wasActive = holdRateActive;
+      restoreHoldRate();
+      if (wasActive) {
+        suppressNextPlayerClick = true;
+        setTimeout(() => { suppressNextPlayerClick = false; }, 500);
+      }
     };
 
     const mountSeekControls = (ui) => {
@@ -3105,6 +3189,10 @@
           </button>`;
         ui.videoWrap.style.position = ui.videoWrap.style.position || 'relative';
         ui.videoWrap.appendChild(seekLayerEl);
+        holdIndicatorEl?.remove();
+        holdIndicatorEl = document.createElement('div');
+        holdIndicatorEl.className = 'bfq-hold-rate-indicator';
+        ui.videoWrap.appendChild(holdIndicatorEl);
         seekLayerEl.querySelectorAll('[data-seek-action]').forEach((button) => {
           button.addEventListener('click', (event) => {
             event.preventDefault();
@@ -3115,7 +3203,17 @@
       }
       if (!boundSeekHosts.has(ui.videoWrap)) {
         boundSeekHosts.add(ui.videoWrap);
+        ui.videoWrap.addEventListener('pointerdown', beginHoldRate, true);
+        ui.videoWrap.addEventListener('contextmenu', (event) => {
+          if (holdPointerId != null || holdRateActive) event.preventDefault();
+        }, true);
         ui.videoWrap.addEventListener('click', (event) => {
+          if (suppressNextPlayerClick) {
+            suppressNextPlayerClick = false;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            return;
+          }
           if (event.target.closest?.('.bfq-seek-btn')) return;
           showSeekControls();
         }, true);
@@ -3178,6 +3276,16 @@
     };
 
     document.addEventListener('visibilitychange', scheduleMount);
+    document.addEventListener('pointermove', moveHoldRate, true);
+    document.addEventListener('pointerup', endHoldRate, true);
+    document.addEventListener('pointercancel', endHoldRate, true);
+    document.addEventListener('pause', (event) => {
+      if (event.target === holdRateMedia) restoreHoldRate();
+    }, true);
+    unsafeWindow.addEventListener('blur', restoreHoldRate);
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) restoreHoldRate();
+    });
     document.addEventListener('loadedmetadata', scheduleMount, true);
     unsafeWindow.navigation?.addEventListener?.('navigate', scheduleMount);
 
