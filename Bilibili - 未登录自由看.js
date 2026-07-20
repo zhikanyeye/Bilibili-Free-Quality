@@ -108,10 +108,14 @@
   }
 
   // 注入伪造 DedeUserID 让服务端按登录态响应。ckMd5 带签名不可伪造，故 isBilibiliLoggedIn 校验它。
+  let _fakeDedeUserId = '';
   function ensureFakeLoginCookie() {
     if (document.cookie.match(/DedeUserID__ckMd5=([^;]+)/)?.[1]) return;
-    const fakeUid = String(Math.floor(Math.random() * 1e10));
-    document.cookie = `DedeUserID=${fakeUid}; path=/; domain=.bilibili.com`;
+    const currentUid = document.cookie.match(/(?:^|;\s*)DedeUserID=([^;]+)/)?.[1] || '';
+    if (!_fakeDedeUserId) _fakeDedeUserId = currentUid || String(Math.floor(Math.random() * 1e10));
+    if (currentUid !== _fakeDedeUserId) {
+      document.cookie = `DedeUserID=${_fakeDedeUserId}; path=/; domain=.bilibili.com`;
+    }
   }
 
   // 拦 top/feed/rcmd 前清 buvid3，避免 B 站按游客跟踪触发登录弹窗（DD1969 思路）
@@ -159,7 +163,9 @@
       const aid = u.searchParams.get('avid') || u.searchParams.get('aid') || '';
       const cid = u.searchParams.get('cid') || '';
       const bvid = u.searchParams.get('bvid') || '';
-      return `${bvid || aid}_${cid}`;
+      const pgcId = u.searchParams.get('ep_id') || u.searchParams.get('season_id') || '';
+      const mediaId = bvid || aid || pgcId;
+      return mediaId || cid ? `${mediaId}_${cid}` : '';
     } catch (e) {
       return '';
     }
@@ -352,6 +358,19 @@
     }
   }
 
+  function pickPlayablePlayurl(...candidates) {
+    const playable = candidates.filter(hasPlayableMedia);
+    if (!playable.length) return null;
+    const unrestricted = playable.filter(candidate => {
+      const data = candidate?.data || {};
+      return data.isPreview !== 1 && data.preview !== 1 && data.need_login !== 1 && data.need_login !== true;
+    });
+    if (!unrestricted.length) return null;
+    return unrestricted.reduce((best, candidate) =>
+      maxQnOfPlayurl(candidate) >= maxQnOfPlayurl(best) ? candidate : best
+    );
+  }
+
   async function proactiveRefetchPlayurl(reason = 'spa', forcedIds = null, generation = _videoGeneration) {
     if (!options.enableProtocolUnlock || isBilibiliLoggedIn()) return false;
     try {
@@ -392,7 +411,6 @@
       const rawUrl = `https://api.bilibili.com/x/player/wbi/playurl?${qs}`;
       const res = await nativePageFetch(rawUrl, { credentials: 'include', method: 'GET' });
       let json = await parseFetchResponseJson(res);
-      json = normalizePlayurlQuality(json);
       if (generation !== _videoGeneration) return false;
 
       if (isTrialOnlyPlayurl(json)) {
@@ -403,13 +421,13 @@
           credentials: 'include',
           method: 'GET'
         });
-        let json2 = await parseFetchResponseJson(res2);
-        json2 = normalizePlayurlQuality(json2);
+        const json2 = await parseFetchResponseJson(res2);
         if (generation !== _videoGeneration) return false;
-        if (json2 && maxQnOfPlayurl(json2) >= maxQnOfPlayurl(json || {})) json = json2;
+        json = pickPlayablePlayurl(json, json2);
       }
 
-      if (json && json.code === 0) {
+      if (hasPlayableMedia(json)) {
+        json = normalizePlayurlQuality(json);
         const reqKey = `${bvid || aid}_${cid}`;
         if (generation !== _videoGeneration) return false;
         writePlayinfo(json, reqKey, generation);
@@ -446,7 +464,7 @@
       for (const name of candidates) {
         if (typeof player[name] === 'function') {
           try {
-            player[name](payload);
+            Promise.resolve(player[name](payload)).catch(() => {});
             console.log('[Bilibili脚本] 已调用 player.' + name, reason);
             break;
           } catch (e) {}
@@ -456,7 +474,7 @@
       // 部分版本把 playurl 挂在 player 内部 store
       try {
         if (player.core && typeof player.core.updatePlayurl === 'function') {
-          player.core.updatePlayurl(payload);
+          Promise.resolve(player.core.updatePlayurl(payload)).catch(() => {});
         }
       } catch (e) {}
 
@@ -704,22 +722,32 @@
 
   let _wbiMixinKey = null;
   let _wbiMixinKeyTs = 0;
+  let _wbiMixinKeyPromise = null;
   async function getWbiMixinKey() {
     if (_wbiMixinKey && Date.now() - _wbiMixinKeyTs < 3600e3) return _wbiMixinKey;
-    const navJson = await nativePageFetch('https://api.bilibili.com/x/web-interface/nav', { credentials: 'include' })
-      .then(res => res.json())
-      .catch(() => null);
-    // 未登录时 nav 返回 code=-101，但 data.wbi_img 仍是有效的 WBI 签名材料。
-    const wbiImg = navJson?.data?.wbi_img || null;
-    if (!wbiImg?.img_url || !wbiImg?.sub_url) return null;
-    const { img_url, sub_url } = wbiImg;
-    const imgKey = img_url.slice(img_url.lastIndexOf('/') + 1, img_url.lastIndexOf('.'));
-    const subKey = sub_url.slice(sub_url.lastIndexOf('/') + 1, sub_url.lastIndexOf('.'));
-    const originKey = imgKey + subKey;
-    const mixinKeyEncryptTable = [46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,33,9,42,19,29,28,14,39,12,38,41,13,37,48,7,16,24,55,40,61,26,17,0,1,60,51,30,4,22,25,54,21,56,59,6,63,57,62,11,36,20,34,44,52];
-    _wbiMixinKey = mixinKeyEncryptTable.map(n => originKey[n]).join('').slice(0, 32);
-    _wbiMixinKeyTs = Date.now();
-    return _wbiMixinKey;
+    if (_wbiMixinKeyPromise) return _wbiMixinKeyPromise;
+    _wbiMixinKeyPromise = (async () => {
+      const navJson = await nativePageFetch('https://api.bilibili.com/x/web-interface/nav', { credentials: 'include' })
+        .then(res => res.json())
+        .catch(() => null);
+      // 未登录时 nav 返回 code=-101，但 data.wbi_img 仍是有效的 WBI 签名材料。
+      const wbiImg = navJson?.data?.wbi_img || null;
+      if (!wbiImg?.img_url || !wbiImg?.sub_url) return null;
+      const { img_url, sub_url } = wbiImg;
+      const imgKey = img_url.slice(img_url.lastIndexOf('/') + 1, img_url.lastIndexOf('.'));
+      const subKey = sub_url.slice(sub_url.lastIndexOf('/') + 1, sub_url.lastIndexOf('.'));
+      const originKey = imgKey + subKey;
+      if (originKey.length < 64) return null;
+      const mixinKeyEncryptTable = [46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,33,9,42,19,29,28,14,39,12,38,41,13,37,48,7,16,24,55,40,61,26,17,0,1,60,51,30,4,22,25,54,21,56,59,6,63,57,62,11,36,20,34,44,52];
+      _wbiMixinKey = mixinKeyEncryptTable.map(n => originKey[n]).join('').slice(0, 32);
+      _wbiMixinKeyTs = Date.now();
+      return _wbiMixinKey;
+    })();
+    try {
+      return await _wbiMixinKeyPromise;
+    } finally {
+      _wbiMixinKeyPromise = null;
+    }
   }
 
   async function getWbiQueryString(params) {
@@ -1121,7 +1149,7 @@
       if (Array.isArray(data.accept_quality) && data.accept_quality.length > 0) {
         return Math.max(...data.accept_quality) < target;
       }
-      return false;
+      return true;
     } catch (e) { return true; }
   }
 
@@ -1270,15 +1298,17 @@
 
         // 安全改写 player/wbi/v2：可多次读取 body，避免顶栏二次消费失败
         if (isPlayerV2Url(rawUrl)) {
+          let res;
           try {
             ensureFakeLoginCookie();
-            const res = await originFetch(input, init);
+            res = await originFetch(input, init);
             const text = await res.clone().text();
             const patched = patchPlayerV2JsonText(text);
             if (patched === text) return res;
             return createReusableJsonResponse(patched, res);
           } catch (e) {
-            return originFetch(input, init);
+            if (res) return res;
+            throw e;
           }
         }
 
@@ -1301,28 +1331,26 @@
           patchPlayerProfileQuality();
 
           let { json: json1 } = await fetchPlayurlJson(rawUrl, true);
-          json1 = normalizePlayurlQuality(json1);
-          if (json1 && !isTrialOnlyPlayurl(json1)) {
+          if (hasPlayableMedia(json1) && !isTrialOnlyPlayurl(json1)) {
+            json1 = normalizePlayurlQuality(json1);
             if (requestGeneration === _videoGeneration) {
               writePlayinfo(json1, reqKey, requestGeneration);
               scheduleForceQuality(8, 400);
             }
+            if (requestGeneration !== _videoGeneration) return originFetch(input, init);
             return createReusableJsonResponse(JSON.stringify(json1));
           }
 
           console.warn('[Bilibili脚本] try_look 未达目标画质，重试 qn=' + getTargetQn());
-          let { res: res2, json: json2 } = await fetchPlayurlJson(rawUrl, false);
-          json2 = normalizePlayurlQuality(json2);
-          const pick = (() => {
-            if (!json1) return json2;
-            if (!json2) return json1;
-            return maxQnOfPlayurl(json2) >= maxQnOfPlayurl(json1) ? json2 : json1;
-          })();
+          const { json: json2 } = await fetchPlayurlJson(rawUrl, false);
+          let pick = pickPlayablePlayurl(json1, json2);
+          if (pick) pick = normalizePlayurlQuality(pick);
           if (pick && requestGeneration === _videoGeneration) {
             writePlayinfo(pick, reqKey, requestGeneration);
             scheduleForceQuality(10, 450);
           }
-          if (!pick) return res2;
+          if (!pick) return originFetch(input, init);
+          if (requestGeneration !== _videoGeneration) return originFetch(input, init);
           return createReusableJsonResponse(JSON.stringify(pick));
         } catch (e) {
           console.warn('[Bilibili脚本] playurl 解锁失败，回退:', e);
@@ -1358,25 +1386,19 @@
             if (patchedOnce || xhr.readyState !== 4) return;
             patchedOnce = true;
             try {
-              const rawText = Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'responseText')
-                ? // 优先读原生 getter，避免已覆盖
-                  (() => {
-                    try { return xhr.responseText; } catch (e) { return ''; }
-                  })()
-                : xhr.responseText;
-              // 若已被我们 define 过，仍可读
-              const text = typeof rawText === 'string' ? rawText : '';
+              const rawValue = xhr.responseType === 'json' ? xhr.response : xhr.responseText;
+              const text = typeof rawValue === 'string' ? rawValue : JSON.stringify(rawValue || {});
               if (!text) return;
               const patched = patchPlayerV2JsonText(text);
               if (patched === text) return;
               const asJson = (() => { try { return JSON.parse(patched); } catch (e) { return patched; } })();
-              Object.defineProperties(xhr, {
-                responseText: { get: () => patched, configurable: true },
-                response: {
-                  get: () => xhr.responseType === 'json' ? asJson : patched,
-                  configurable: true
-                }
-              });
+              const descriptors = {
+                response: { get: () => xhr.responseType === 'json' ? asJson : patched, configurable: true }
+              };
+              if (xhr.responseType !== 'json') {
+                descriptors.responseText = { get: () => patched, configurable: true };
+              }
+              Object.defineProperties(xhr, descriptors);
             } catch (e) {}
           };
           // 捕获阶段先于页面监听器
@@ -1418,22 +1440,20 @@
           patchPlayerProfileQuality();
 
           let { json } = await fetchPlayurlJson(rawUrl, true);
-          json = normalizePlayurlQuality(json);
           if (isTrialOnlyPlayurl(json)) {
             console.warn('[Bilibili脚本] XHR try_look 未达目标画质，重试');
             let json2;
             ({ json: json2 } = await fetchPlayurlJson(rawUrl, false));
-            json2 = normalizePlayurlQuality(json2);
-            if (json2 && maxQnOfPlayurl(json2) >= maxQnOfPlayurl(json || {})) json = json2;
+            json = pickPlayablePlayurl(json, json2);
           }
           if (!hasPlayableMedia(json)) {
             console.warn('[Bilibili脚本] XHR playurl 未获得有效媒体流，回退原请求');
             return originSend.apply(xhr, args);
           }
-          if (requestGeneration === _videoGeneration) {
-            writePlayinfo(json, reqKey, requestGeneration);
-            scheduleForceQuality(10, 450);
-          }
+          json = normalizePlayurlQuality(json);
+          if (requestGeneration !== _videoGeneration) return originSend.apply(xhr, args);
+          writePlayinfo(json, reqKey, requestGeneration);
+          scheduleForceQuality(10, 450);
           emitXhrFakeResponse(xhr, json);
         } catch (e) {
           console.warn('[Bilibili脚本] XHR playurl 解锁失败:', e);
